@@ -1,3 +1,24 @@
+/* --- Theme Toggle --- */
+(function initTheme() {
+  const saved = localStorage.getItem("ctrlscan-theme") || "dark";
+  document.documentElement.setAttribute("data-theme", saved);
+  function updateToggleLabel() {
+    const current = document.documentElement.getAttribute("data-theme") || "dark";
+    const label = document.getElementById("themeToggleLabel");
+    if (label) label.textContent = current === "light" ? "Dark Mode" : "Light Mode";
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    updateToggleLabel();
+    document.getElementById("themeToggle")?.addEventListener("click", () => {
+      const current = document.documentElement.getAttribute("data-theme") || "dark";
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("ctrlscan-theme", next);
+      updateToggleLabel();
+    });
+  });
+})();
+
 const state = {
   view: "overview",
   status: null,
@@ -468,10 +489,12 @@ function renderHealthPill() {
   const st = state.status;
   if (!st) {
     pill.textContent = "Health: unknown";
+    pill.className = "pill pill-idle";
     return;
   }
   const health = st.running ? (st.paused ? "paused" : "ok") : "idle";
   pill.textContent = `Health: ${health} • workers ${st.workers ?? "?"}`;
+  pill.className = health === "ok" ? "pill pill-ok" : health === "paused" ? "pill pill-warn" : "pill pill-idle";
 }
 
 function renderOverview() {
@@ -481,16 +504,16 @@ function renderOverview() {
   const last = state.jobs[0];
   setHtml(root, `
     <div class="grid cols-4">
-      <div class="card"><div class="metric-label">Agent</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Ready" : "Idle")}</div></div>
-      <div class="card"><div class="metric-label">Queued Repos</div><div class="metric-value">${st.queued_repos ?? 0}</div></div>
-      <div class="card"><div class="metric-label">Active Jobs</div><div class="metric-value">${st.active_jobs ?? 0}</div></div>
-      <div class="card"><div class="metric-label">Pending Fixes</div><div class="metric-value">${st.pending_fixes ?? 0}</div></div>
+      <div class="card card-ok"><div class="metric-label">Agent</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Ready" : "Idle")}</div></div>
+      <div class="card card-accent"><div class="metric-label">Queued Repos</div><div class="metric-value">${st.queued_repos ?? 0}</div></div>
+      <div class="card card-purple"><div class="metric-label">Active Jobs</div><div class="metric-value">${st.active_jobs ?? 0}</div></div>
+      <div class="card card-orange"><div class="metric-label">Pending Fixes</div><div class="metric-value">${st.pending_fixes ?? 0}</div></div>
     </div>
-    <div class="grid cols-4" style="margin-top:14px">
-      <div class="card"><div class="metric-label">High (Aggregate)</div><div class="metric-value">${sum.high ?? 0}</div></div>
-      <div class="card"><div class="metric-label">Medium (Aggregate)</div><div class="metric-value">${sum.medium ?? 0}</div></div>
-      <div class="card"><div class="metric-label">Low (Aggregate)</div><div class="metric-value">${sum.low ?? 0}</div></div>
-      <div class="card"><div class="metric-label">Critical (Aggregate)</div><div class="metric-value">${sum.critical ?? 0}</div></div>
+    <div class="grid cols-4" style="margin-top:12px">
+      <div class="card card-high"><div class="metric-label">High (Aggregate)</div><div class="metric-value high">${sum.high ?? 0}</div></div>
+      <div class="card card-medium"><div class="metric-label">Medium (Aggregate)</div><div class="metric-value medium">${sum.medium ?? 0}</div></div>
+      <div class="card card-low"><div class="metric-label">Low (Aggregate)</div><div class="metric-value low">${sum.low ?? 0}</div></div>
+      <div class="card card-critical"><div class="metric-label">Critical (Aggregate)</div><div class="metric-value critical">${sum.critical ?? 0}</div></div>
     </div>
     <div class="grid cols-2" style="margin-top:14px">
       <div class="card">
@@ -991,10 +1014,10 @@ function renderScanDetailPage() {
         </div>
       </div>
       <div class="grid cols-4">
-        <div class="card"><div class="metric-label">Critical</div><div class="metric-value">${severityCards.critical}</div></div>
-        <div class="card"><div class="metric-label">High</div><div class="metric-value">${severityCards.high}</div></div>
-        <div class="card"><div class="metric-label">Medium</div><div class="metric-value">${severityCards.medium}</div></div>
-        <div class="card"><div class="metric-label">Low</div><div class="metric-value">${severityCards.low}</div></div>
+        <div class="card card-critical"><div class="metric-label">Critical</div><div class="metric-value critical">${severityCards.critical}</div></div>
+        <div class="card card-high"><div class="metric-label">High</div><div class="metric-value high">${severityCards.high}</div></div>
+        <div class="card card-medium"><div class="metric-label">Medium</div><div class="metric-value medium">${severityCards.medium}</div></div>
+        <div class="card card-low"><div class="metric-label">Low</div><div class="metric-value low">${severityCards.low}</div></div>
       </div>
       <div class="card">
         <h3>Scanners</h3>
@@ -1343,9 +1366,9 @@ function renderAgents() {
   const workers = [...(state.agentWorkers || [])].sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
   setHtml(root, `
     <div class="grid cols-3">
-      <div class="card"><div class="metric-label">Runtime</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Running" : "Idle")}</div></div>
-      <div class="card"><div class="metric-label">Scan Workers</div><div class="metric-value">${st.workers ?? state.agent?.status?.workers ?? 0}</div></div>
-      <div class="card"><div class="metric-label">Mode</div><div class="metric-value" style="font-size:22px">${escapeHtml(agent.mode || "triage")}</div></div>
+      <div class="card card-ok"><div class="metric-label">Runtime</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Running" : "Idle")}</div></div>
+      <div class="card card-accent"><div class="metric-label">Scan Workers</div><div class="metric-value">${st.workers ?? state.agent?.status?.workers ?? 0}</div></div>
+      <div class="card card-purple"><div class="metric-label">Mode</div><div class="metric-value" style="font-size:22px">${escapeHtml(agent.mode || "triage")}</div></div>
     </div>
     <div class="grid cols-2" style="margin-top:14px">
       <div class="card">

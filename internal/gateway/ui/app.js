@@ -1234,6 +1234,30 @@ function renderScanDetailPage() {
       await handleFixAction(id, action);
     });
   });
+  root.querySelector("#detailFixesSearch")?.addEventListener("input", (e) => {
+    state.scanDetailFixesSearch = e.target.value || "";
+    state.scanDetailFixesPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFixesStatusFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFixesStatus = e.target.value || "";
+    state.scanDetailFixesPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFixesSearchClear")?.addEventListener("click", () => {
+    state.scanDetailFixesSearch = "";
+    state.scanDetailFixesStatus = "";
+    state.scanDetailFixesPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFixesPrev")?.addEventListener("click", () => {
+    state.scanDetailFixesPage = Math.max(1, (state.scanDetailFixesPage || 1) - 1);
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFixesNext")?.addEventListener("click", () => {
+    state.scanDetailFixesPage = Math.min(fixTotalPages, (state.scanDetailFixesPage || 1) + 1);
+    renderScanDetailPage();
+  });
   root.querySelector("#detailLaunchReviewCampaign")?.addEventListener("click", launchReviewCampaignForSelectedScan);
   root.querySelector("#detailStopReviewCampaign")?.addEventListener("click", stopReviewCampaignForSelectedScan);
 }

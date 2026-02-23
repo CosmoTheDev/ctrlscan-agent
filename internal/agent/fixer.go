@@ -119,6 +119,22 @@ func (f *FixerAgent) processFixJob(ctx context.Context, job fixJob) error {
 		outcome.TriageSummary = "No actionable findings remained after default AI fix prefilters (e.g. vendored/generated/test fixture paths)."
 		return nil
 	}
+	if !forceRetryGeneratedFixes() {
+		findings, skippedExisting := f.filterAlreadyGeneratedFixes(ctx, job.ScanJobID, findings)
+		if skippedExisting > 0 {
+			slog.Info("Skipped findings with existing generated fixes",
+				"scan_job_id", job.ScanJobID,
+				"skipped_existing", skippedExisting,
+				"remaining", len(findings),
+			)
+		}
+		outcome.FindingsLoaded = len(findings)
+		if len(findings) == 0 {
+			outcome.TriageStatus = "all_findings_already_processed"
+			outcome.TriageSummary = "All actionable findings for this scan job already have generated fix records. Set CTRLSCAN_AI_FORCE_RETRY_FIXES=1 to force reprocessing."
+			return nil
+		}
+	}
 
 	slog.Info("Loaded findings for triage", "count", len(findings), "scan_job_id", job.ScanJobID)
 	deduped, dedupeStats := dedupeFindingsForTriage(findings)
@@ -527,6 +543,7 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 	fix := &models.FixQueue{
 		ScanJobID:   job.ScanJobID,
 		FindingType: finding.Type,
+		FindingRef:  finding.ID,
 		Patch:       fixResult.Patch,
 		PRTitle:     fmt.Sprintf("fix(security): %s", truncate(finding.Title, 60)),
 		PRBody:      fixResult.Explanation,
@@ -551,6 +568,55 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 			"finding_id", finding.ID)
 	}
 	return fixAttemptQueued
+}
+
+func (f *FixerAgent) filterAlreadyGeneratedFixes(ctx context.Context, scanJobID int64, findings []models.FindingSummary) ([]models.FindingSummary, int) {
+	if scanJobID <= 0 || len(findings) == 0 {
+		return findings, 0
+	}
+	var rows []struct {
+		FindingRef string `db:"finding_ref"`
+	}
+	if err := f.db.Migrate(ctx); err != nil {
+		return findings, 0
+	}
+	if err := f.db.Select(ctx, &rows, `
+		SELECT finding_ref
+		FROM fix_queue
+		WHERE scan_job_id = ?
+		  AND finding_ref <> ''
+		  AND status IN ('pending','approved','rejected','pr_open','pr_merged','pr_failed')
+	`, scanJobID); err != nil {
+		return findings, 0
+	}
+	if len(rows) == 0 {
+		return findings, 0
+	}
+	seen := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		ref := strings.TrimSpace(r.FindingRef)
+		if ref != "" {
+			seen[ref] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return findings, 0
+	}
+	out := make([]models.FindingSummary, 0, len(findings))
+	skipped := 0
+	for _, fd := range findings {
+		if _, ok := seen[strings.TrimSpace(fd.ID)]; ok {
+			skipped++
+			continue
+		}
+		out = append(out, fd)
+	}
+	return out, skipped
+}
+
+func forceRetryGeneratedFixes() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("CTRLSCAN_AI_FORCE_RETRY_FIXES")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
 func (f *FixerAgent) persistRemediationTaskOutcome(ctx context.Context, taskID int64, outcome aiRemediationOutcome) {

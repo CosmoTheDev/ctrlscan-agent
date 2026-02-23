@@ -41,6 +41,12 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (*RunResults, error)
 	scanOpts := ScanOptions{
 		RepoPath: opts.RepoPath,
 		BinDir:   "",
+		JobID:    jobID,
+		Provider: opts.Provider,
+		Owner:    opts.Owner,
+		Repo:     opts.Repo,
+		Branch:   opts.Branch,
+		Commit:   opts.Commit,
 	}
 
 	results := &RunResults{
@@ -189,7 +195,15 @@ func (r *Runner) runSequential(ctx context.Context, opts ScanOptions) map[string
 }
 
 func (r *Runner) runOne(ctx context.Context, s Scanner, opts ScanOptions) *ScanResult {
-	slog.Info("Running scanner", "scanner", s.Name())
+	repoFull := strings.Trim(strings.TrimSpace(opts.Owner)+"/"+strings.TrimSpace(opts.Repo), "/")
+	slog.Info("Running scanner",
+		"scanner", s.Name(),
+		"scanner_type", s.ScannerType(),
+		"job_id", opts.JobID,
+		"repo", repoFull,
+		"branch", opts.Branch,
+		"commit", opts.Commit,
+	)
 	start := time.Now()
 
 	// Check availability: prefer local → fall back to docker.
@@ -213,7 +227,15 @@ func (r *Runner) runOne(ctx context.Context, s Scanner, opts ScanOptions) *ScanR
 
 	result, err := s.Scan(ctx, opts)
 	if err != nil {
-		slog.Error("Scanner failed", "scanner", s.Name(), "error", err)
+		slog.Error("Scanner failed",
+			"scanner", s.Name(),
+			"scanner_type", s.ScannerType(),
+			"job_id", opts.JobID,
+			"repo", repoFull,
+			"branch", opts.Branch,
+			"commit", opts.Commit,
+			"error", err,
+		)
 		return &ScanResult{
 			Scanner:     s.Name(),
 			Type:        s.ScannerType(),
@@ -226,6 +248,11 @@ func (r *Runner) runOne(ctx context.Context, s Scanner, opts ScanOptions) *ScanR
 	result.DurationSec = time.Since(start).Seconds()
 	slog.Info("Scanner completed",
 		"scanner", s.Name(),
+		"scanner_type", s.ScannerType(),
+		"job_id", opts.JobID,
+		"repo", repoFull,
+		"branch", opts.Branch,
+		"commit", opts.Commit,
 		"findings", result.FindingsCount,
 		"duration", fmt.Sprintf("%.1fs", result.DurationSec),
 	)

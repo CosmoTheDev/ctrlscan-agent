@@ -354,6 +354,8 @@ func (o *Orchestrator) runSweep(
 				if o.opts.OnRepoSkipped != nil {
 					o.opts.OnRepoSkipped(payload)
 				}
+			}, func(ws WorkerStatus) {
+				o.setWorkerStatus(ws)
 			})
 			sa.Run(sweepCtx, repoQueue, fixQueue)
 		}(i)

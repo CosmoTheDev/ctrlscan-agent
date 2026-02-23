@@ -710,9 +710,9 @@ function renderConfig() {
       const parsed = JSON.parse(editor.value);
       await api("/api/config", { method: "PUT", body: JSON.stringify(parsed) });
       await refreshConfig();
-      alert("Config saved.");
+      showNotice("Config Saved", "Configuration saved.");
     } catch (err) {
-      alert(`Config save failed: ${err.message}`);
+      showNotice("Config Save Failed", err.message);
     }
   });
 }
@@ -739,7 +739,7 @@ async function triggerSweep() {
     await api("/api/agent/trigger", { method: "POST", body: "{}" });
     await refreshStatus();
   } catch (err) {
-    alert(`Trigger failed: ${err.message}`);
+    showNotice("Trigger Failed", err.message);
   }
 }
 
@@ -754,7 +754,7 @@ async function triggerSweepWithOptions({ scanTargets, workers, selectedRepos }) 
     await refreshStatus();
     await refreshAgent();
   } catch (err) {
-    alert(`Trigger failed: ${err.message}`);
+    showNotice("Trigger Failed", err.message);
   }
 }
 
@@ -769,7 +769,7 @@ async function stopSweep() {
     }
     await refreshStatus();
   } catch (err) {
-    alert(`Stop failed: ${err.message}`);
+    showNotice("Stop Failed", err.message);
   } finally {
     state.stopBusy = false;
     syncStopButtons();
@@ -782,7 +782,7 @@ async function setPaused(paused) {
     await refreshStatus();
     await refreshAgent();
   } catch (err) {
-    alert(`Agent update failed: ${err.message}`);
+    showNotice("Agent Update Failed", err.message);
   }
 }
 
@@ -792,7 +792,7 @@ async function createCron() {
   const expr = root.querySelector("#cronExpr").value.trim();
   const mode = root.querySelector("#cronMode").value.trim();
   if (!name || !expr) {
-    alert("Name and expression are required.");
+    showNotice("Missing Fields", "Name and expression are required.");
     return;
   }
   try {
@@ -803,7 +803,7 @@ async function createCron() {
     root.querySelector("#cronName").value = "";
     await refreshCron();
   } catch (err) {
-    alert(`Create schedule failed: ${err.message}`);
+    showNotice("Create Schedule Failed", err.message);
   }
 }
 
@@ -812,17 +812,17 @@ async function triggerCron(id) {
     await api(`/api/schedules/${id}/trigger`, { method: "POST", body: "{}" });
     await refreshCron();
   } catch (err) {
-    alert(`Trigger schedule failed: ${err.message}`);
+    showNotice("Trigger Schedule Failed", err.message);
   }
 }
 
 async function deleteCron(id) {
-  if (!confirm(`Delete schedule #${id}?`)) return;
+  if (!(await showConfirm({ title: "Delete Schedule", message: `Delete schedule #${id}?`, confirmLabel: "Delete" }))) return;
   try {
     await fetch(`/api/schedules/${id}`, { method: "DELETE" });
     await refreshCron();
   } catch (err) {
-    alert(`Delete schedule failed: ${err.message}`);
+    showNotice("Delete Schedule Failed", err.message);
   }
 }
 
@@ -876,20 +876,28 @@ function reconcileSelectedJobs() {
 async function deleteOneScanJob(id) {
   const job = (state.jobs || []).find(j => j.id === id);
   const label = job ? `${job.owner}/${job.repo}` : `#${id}`;
-  if (!confirm(`Delete scan job #${id} (${label})? This removes stored findings and raw outputs for the job.`)) return;
+  if (!(await showConfirm({
+    title: "Delete Scan Job",
+    message: `Delete scan job #${id} (${label})? This removes stored findings and raw outputs for the job.`,
+    confirmLabel: "Delete",
+  }))) return;
   try {
     await api(`/api/jobs/${id}`, { method: "DELETE" });
     delete state.selectedScanJobIds[id];
     await refreshJobs();
   } catch (err) {
-    alert(`Delete failed: ${err.message}`);
+    showNotice("Delete Failed", err.message);
   }
 }
 
 async function deleteSelectedScanJobs() {
   const ids = Object.keys(state.selectedScanJobIds || {}).map(Number).filter(Boolean).sort((a, b) => a - b);
   if (ids.length === 0) return;
-  if (!confirm(`Delete ${ids.length} selected scan job${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+  if (!(await showConfirm({
+    title: "Delete Selected Scan Jobs",
+    message: `Delete ${ids.length} selected scan job${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
+    confirmLabel: "Delete Selected",
+  }))) return;
   try {
     const res = await api("/api/jobs", {
       method: "DELETE",
@@ -905,14 +913,19 @@ async function deleteSelectedScanJobs() {
       showNotice("Delete Completed", `Deleted ${res.deleted_count || 0} jobs. Not found: ${res.not_found_ids.join(", ")}.`);
     }
   } catch (err) {
-    alert(`Bulk delete failed: ${err.message}`);
+    showNotice("Bulk Delete Failed", err.message);
   }
 }
 
 async function deleteAllScanJobs() {
   const count = (state.jobs || []).length;
   if (count === 0) return;
-  const confirmation = prompt(`Delete ALL ${count} scan jobs and their stored findings/raw outputs? Type DELETE ALL to confirm.`);
+  const confirmation = await showPrompt({
+    title: "Delete All Scan Jobs",
+    message: `Delete ALL ${count} scan jobs and their stored findings/raw outputs? Type DELETE ALL to confirm.`,
+    placeholder: "DELETE ALL",
+    confirmLabel: "Delete All",
+  });
   if (confirmation !== "DELETE ALL") return;
   try {
     await api("/api/jobs", {
@@ -923,7 +936,7 @@ async function deleteAllScanJobs() {
     clearSelectedJob();
     await refreshJobs();
   } catch (err) {
-    alert(`Delete all failed: ${err.message}`);
+    showNotice("Delete All Failed", err.message);
   }
 }
 
@@ -1029,7 +1042,7 @@ async function handleFixAction(id, action) {
       showNotice("PR Processing Started", "The fix was approved and PR processing has been triggered. Refresh or wait for SSE updates to see PR status.");
     }
   } catch (err) {
-    alert(`Fix action failed: ${err.message}`);
+    showNotice("Fix Action Failed", err.message);
   }
 }
 
@@ -1062,6 +1075,82 @@ function wireNoticeModal() {
   document.getElementById("noticeModalOk").addEventListener("click", hideNotice);
   document.getElementById("noticeModal").addEventListener("click", (e) => {
     if (e.target.id === "noticeModal") hideNotice();
+  });
+}
+
+let confirmModalResolve = null;
+let promptModalResolve = null;
+
+function hideConfirmModal(result) {
+  document.getElementById("confirmModal").classList.add("hidden");
+  if (confirmModalResolve) {
+    const resolve = confirmModalResolve;
+    confirmModalResolve = null;
+    resolve(!!result);
+  }
+}
+
+function showConfirm({ title, message, confirmLabel = "OK", danger = true } = {}) {
+  document.getElementById("confirmModalTitle").textContent = title || "Confirm";
+  document.getElementById("confirmModalBody").textContent = message || "Are you sure?";
+  const okBtn = document.getElementById("confirmModalOk");
+  okBtn.textContent = confirmLabel;
+  okBtn.className = danger ? "btn btn-danger" : "btn btn-primary";
+  document.getElementById("confirmModal").classList.remove("hidden");
+  return new Promise((resolve) => {
+    confirmModalResolve = resolve;
+  });
+}
+
+function wireConfirmModal() {
+  document.getElementById("confirmModalCancel").addEventListener("click", () => hideConfirmModal(false));
+  document.getElementById("confirmModalOk").addEventListener("click", () => hideConfirmModal(true));
+  document.getElementById("confirmModal").addEventListener("click", (e) => {
+    if (e.target.id === "confirmModal") hideConfirmModal(false);
+  });
+}
+
+function hidePromptModal(result) {
+  document.getElementById("promptModal").classList.add("hidden");
+  const input = document.getElementById("promptModalInput");
+  if (promptModalResolve) {
+    const resolve = promptModalResolve;
+    promptModalResolve = null;
+    resolve(result === null ? null : String(result ?? ""));
+  }
+  input.value = "";
+}
+
+function showPrompt({ title, message, placeholder = "", confirmLabel = "Confirm" } = {}) {
+  document.getElementById("promptModalTitle").textContent = title || "Confirm Action";
+  document.getElementById("promptModalBody").textContent = message || "";
+  const input = document.getElementById("promptModalInput");
+  input.value = "";
+  input.placeholder = placeholder;
+  document.getElementById("promptModalOk").textContent = confirmLabel;
+  document.getElementById("promptModal").classList.remove("hidden");
+  setTimeout(() => input.focus(), 0);
+  return new Promise((resolve) => {
+    promptModalResolve = resolve;
+  });
+}
+
+function wirePromptModal() {
+  const input = document.getElementById("promptModalInput");
+  document.getElementById("promptModalCancel").addEventListener("click", () => hidePromptModal(null));
+  document.getElementById("promptModalOk").addEventListener("click", () => hidePromptModal(input.value));
+  document.getElementById("promptModal").addEventListener("click", (e) => {
+    if (e.target.id === "promptModal") hidePromptModal(null);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      hidePromptModal(input.value);
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      hidePromptModal(null);
+    }
   });
 }
 
@@ -1239,13 +1328,13 @@ function wireTriggerModal() {
     const workersRaw = document.getElementById("triggerWorkers").value.trim();
     const selectedRepos = getSelectedPreviewRepos();
     if (state.triggerPlan.targets.length === 0 && selectedRepos.length === 0) {
-      alert("Select at least one scan target or choose one or more preview repos.");
+      showNotice("Nothing Selected", "Select at least one scan target or choose one or more preview repos.");
       return;
     }
     if (workersRaw !== "") {
       const n = Number(workersRaw);
       if (!Number.isFinite(n) || n < 1 || n > 64) {
-        alert("Workers must be between 1 and 64.");
+        showNotice("Invalid Workers", "Workers must be between 1 and 64.");
         return;
       }
     }
@@ -1264,6 +1353,8 @@ async function bootstrap() {
   renderNav();
   wireGlobalButtons();
   wireNoticeModal();
+  wireConfirmModal();
+  wirePromptModal();
   wireTriggerModal();
   setView("overview", { replaceHistory: true });
   connectEvents();

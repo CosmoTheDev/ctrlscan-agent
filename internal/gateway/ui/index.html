@@ -94,6 +94,42 @@
       </div>
     </div>
   </div>
+
+  <div id="confirmModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <div>
+          <h2 id="confirmModalTitle">Confirm</h2>
+          <p id="confirmModalBody">Are you sure?</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="confirmModalCancel" class="btn btn-secondary">Cancel</button>
+        <button id="confirmModalOk" class="btn btn-danger">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="promptModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="promptModalTitle">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <div>
+          <h2 id="promptModalTitle">Confirm Action</h2>
+          <p id="promptModalBody">Enter confirmation text.</p>
+        </div>
+      </div>
+      <div class="modal-body">
+        <label>
+          Confirmation
+          <input id="promptModalInput" type="text" autocomplete="off" />
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button id="promptModalCancel" class="btn btn-secondary">Cancel</button>
+        <button id="promptModalOk" class="btn btn-danger">Confirm</button>
+      </div>
+    </div>
+  </div>
   <script src="/ui/app.js"></script>
 </body>
 </html>

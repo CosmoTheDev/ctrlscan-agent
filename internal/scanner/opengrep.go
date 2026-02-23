@@ -10,6 +10,36 @@ import (
 	"github.com/CosmoTheDev/ctrlscan-agent/models"
 )
 
+// opengrepStringList tolerates schema drift where fields may be a string,
+// array of strings, null, or omitted.
+type opengrepStringList []string
+
+func (l *opengrepStringList) UnmarshalJSON(data []byte) error {
+	if l == nil {
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*l = arr
+		return nil
+	}
+	var one string
+	if err := json.Unmarshal(data, &one); err == nil {
+		if one == "" {
+			*l = nil
+		} else {
+			*l = []string{one}
+		}
+		return nil
+	}
+	var anyVal interface{}
+	if err := json.Unmarshal(data, &anyVal); err == nil && anyVal == nil {
+		*l = nil
+		return nil
+	}
+	return fmt.Errorf("unsupported string-list JSON shape: %s", string(data))
+}
+
 // OpengrepScanner implements Scanner using opengrep for SAST.
 type OpengrepScanner struct {
 	binDir string
@@ -49,10 +79,10 @@ type opengrepOutput struct {
 			Message  string `json:"message"`
 			Severity string `json:"severity"`
 			Metadata struct {
-				Category   string   `json:"category"`
-				Confidence string   `json:"confidence"`
-				CWE        []string `json:"cwe"`
-				OWASP      []string `json:"owasp"`
+				Category   string             `json:"category"`
+				Confidence string             `json:"confidence"`
+				CWE        opengrepStringList `json:"cwe"`
+				OWASP      opengrepStringList `json:"owasp"`
 			} `json:"metadata"`
 			Fingerprint string `json:"fingerprint"`
 		} `json:"extra"`

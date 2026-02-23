@@ -1198,6 +1198,8 @@ func (gw *Gateway) handleGetJobRawScannerOutput(w http.ResponseWriter, r *http.R
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	}
 	w.WriteHeader(http.StatusOK)
+	// Raw scanner payload download endpoint intentionally streams bytes with an explicit content type.
+	// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 	_, _ = w.Write(row.RawOutput)
 }
 
@@ -2010,6 +2012,8 @@ func (gw *Gateway) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// Send initial connected event with current status.
 	status := gw.currentStatus()
 	connected, _ := json.Marshal(SSEEvent{Type: "connected", Payload: status})
+	// SSE endpoint writes JSON event frames, not HTML; HTML escaping is not applicable here.
+	// nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter
 	fmt.Fprintf(w, "data: %s\n\n", connected)
 	flusher.Flush()
 
@@ -2021,6 +2025,8 @@ func (gw *Gateway) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			// SSE endpoint streams prebuilt frames (event-stream), not HTML template output.
+			// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 			w.Write(frame)
 			flusher.Flush()
 		}

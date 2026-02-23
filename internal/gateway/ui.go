@@ -24,6 +24,8 @@ func (gw *Gateway) handleUIIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Embedded UI assets are static build-time files, not user-controlled template output.
+	// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 	_, _ = w.Write(data)
 }
 
@@ -47,5 +49,7 @@ func (gw *Gateway) handleUIAsset(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.Header().Set("Cache-Control", "no-cache")
+	// Embedded UI asset bytes are served as static files with an explicit content type.
+	// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 	_, _ = w.Write(data)
 }

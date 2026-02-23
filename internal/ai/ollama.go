@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -34,6 +36,10 @@ func NewOllama(cfg config.AIConfig) (*OllamaProvider, error) {
 	if base == "" {
 		base = "http://localhost:11434"
 	}
+	base, err := normalizeLocalOllamaBaseURL(base)
+	if err != nil {
+		return nil, err
+	}
 	model := cfg.Model
 	if model == "" {
 		model = "llama3.2"
@@ -49,7 +55,7 @@ func NewOllama(cfg config.AIConfig) (*OllamaProvider, error) {
 		retryBackoff = 1500 * time.Millisecond
 	}
 	return &OllamaProvider{
-		baseURL:      strings.TrimRight(base, "/"),
+		baseURL:      base,
 		model:        model,
 		client:       &http.Client{Timeout: timeout},
 		maxAttempts:  maxAttempts,
@@ -66,6 +72,7 @@ func (o *OllamaProvider) IsAvailable(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
+	// #nosec G704 -- o.baseURL is restricted to localhost/loopback and validated in normalizeLocalOllamaBaseURL.
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return false
@@ -108,7 +115,14 @@ Return only valid JSON.`, string(findingsJSON))
 
 func (o *OllamaProvider) GenerateFix(ctx context.Context, req FixRequest) (*FixResult, error) {
 	reqJSON, _ := json.MarshalIndent(req, "", "  ")
-	prompt := fmt.Sprintf(`Generate a minimal security fix as JSON with "patch", "explanation", "confidence".
+	prompt := fmt.Sprintf(`Generate a minimal security fix as JSON with "patch", "explanation", "confidence", and optional "apply_hints".
+"apply_hints" should be an object and may include:
+- "target_files" (array of repo-relative file paths expected to change)
+- "apply_strategy" ("git_apply", "edit_file_directly", or "dependency_bump")
+- "prerequisites" (array of assumptions/checks before applying)
+- "post_apply_checks" (array of commands/checks to run after applying)
+- "fallback_patch_notes" (brief notes if git apply may fail due to offsets/context)
+- "risk_notes" (brief reviewer caution notes)
 Context: %s
 Return only valid JSON.`, string(reqJSON))
 
@@ -196,6 +210,7 @@ func (o *OllamaProvider) complete(ctx context.Context, prompt string) (string, e
 		}
 		req.Header.Set("Content-Type", "application/json")
 
+		// #nosec G704 -- o.baseURL is restricted to localhost/loopback and validated in normalizeLocalOllamaBaseURL.
 		resp, err := o.client.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("calling Ollama API: %w", err)
@@ -254,6 +269,43 @@ func truncateForError(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+func normalizeLocalOllamaBaseURL(raw string) (string, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid Ollama URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid Ollama URL scheme %q (expected http or https)", u.Scheme)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return "", fmt.Errorf("invalid Ollama URL: missing host")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("invalid Ollama URL: credentials are not supported")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("invalid Ollama URL: query and fragment are not supported")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("invalid Ollama URL: base path is not supported")
+	}
+
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return strings.TrimRight(u.String(), "/"), nil
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsLoopback() {
+		return strings.TrimRight(u.String(), "/"), nil
+	}
+
+	return "", fmt.Errorf("Ollama URL must point to localhost or a loopback address")
 }
 
 func envBool(key string) bool {

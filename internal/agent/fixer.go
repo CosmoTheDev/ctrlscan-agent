@@ -230,6 +230,12 @@ func (f *FixerAgent) processFixJob(ctx context.Context, job fixJob) error {
 			"duplicates_removed", dedupeStats.duplicateCount,
 		)
 	}
+	if f.shouldStreamFixesDuringTriage() {
+		if err := f.triageAndGenerateFixesStreaming(ctx, job, deduped, resumeState, &outcome); err != nil {
+			return err
+		}
+		return nil
+	}
 
 	// Triage with AI (chunked for large scans).
 	triage, triageBatches, err := f.triageFindingsChunked(ctx, job, deduped, resumeState)
@@ -353,6 +359,192 @@ func (f *FixerAgent) processFixJob(ctx context.Context, job fixJob) error {
 	})
 
 	return nil
+}
+
+func (f *FixerAgent) shouldStreamFixesDuringTriage() bool {
+	if v := strings.TrimSpace(strings.ToLower(os.Getenv("CTRLSCAN_AI_STREAM_TRIAGE_FIXES"))); v != "" {
+		return v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	return f.resolveTriageChunkSize() == 1
+}
+
+func (f *FixerAgent) triageAndGenerateFixesStreaming(ctx context.Context, job fixJob, findings []models.FindingSummary, resume remediationTaskResumeState, outcome *aiRemediationOutcome) error {
+	chunkSize := f.resolveTriageChunkSize()
+	if chunkSize <= 0 {
+		chunkSize = 1
+	}
+	chunks := chunkFindings(findings, chunkSize)
+	if len(chunks) == 0 {
+		outcome.TriageStatus = "no_findings"
+		f.reportRemediationProgress(ctx, job, remediationProgressEvent{
+			Phase: "done", PhaseLabel: "complete", Percent: 100, Note: "no findings to triage",
+		})
+		return nil
+	}
+
+	merged := &aiPkg.TriageResult{
+		Summary:     fmt.Sprintf("Streaming triage over %d findings across %d batches.", len(findings), len(chunks)),
+		Prioritised: make([]aiPkg.TriagedFinding, 0, len(findings)),
+	}
+	nextPriority := 1
+	startBatch := 0
+	if canResumeChunkedTriage(resume, len(chunks)) {
+		if parsed, err := parseSavedTriagedFindings(resume.TriagePrioritisedJSON); err == nil {
+			merged.Prioritised = parsed
+			if strings.TrimSpace(resume.TriageSummary) != "" {
+				merged.Summary = resume.TriageSummary
+			}
+			startBatch = resume.ProgressCurrent
+			if startBatch > len(chunks) {
+				startBatch = len(chunks)
+			}
+			nextPriority = len(merged.Prioritised) + 1
+			args := append(remediationJobLogFields(job),
+				"resume_batch", startBatch+1,
+				"total_batches", len(chunks),
+				"mode", "streaming",
+			)
+			slog.Info("Resuming streaming AI triage/fix from checkpoint", args...)
+		}
+	}
+
+	outcome.TriageBatches = len(chunks)
+	planned := plannedFixAttempts(len(findings))
+	f.reportRemediationProgress(ctx, job, remediationProgressEvent{
+		Phase: "triage", PhaseLabel: "AI triage + fix streaming", Current: startBatch, Total: len(chunks),
+		Percent: progressPercent(startBatch, len(chunks)),
+		Note:    fmt.Sprintf("streaming triage/fix across %d findings", len(findings)),
+	})
+
+	for idx, chunk := range chunks {
+		if idx < startBatch {
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		f.reportRemediationProgress(ctx, job, remediationProgressEvent{
+			Phase: "triage", PhaseLabel: "AI triage + fix streaming", Current: idx, Total: len(chunks),
+			Percent: progressPercent(idx, len(chunks)),
+			Note:    fmt.Sprintf("running triage batch %d/%d (%d findings)", idx+1, len(chunks), len(chunk)),
+		})
+		args := append(remediationJobLogFields(job),
+			"batch", idx+1,
+			"batches", len(chunks),
+			"chunk_size", len(chunk),
+			"streaming", true,
+		)
+		slog.Info("Running chunked AI triage batch", args...)
+
+		res, err := f.ai.TriageFindings(ctx, chunk)
+		if err != nil {
+			// In streaming mode, local fallback ordering keeps the pipeline moving.
+			wargs := append(remediationJobLogFields(job), "batch", idx+1, "error", err, "streaming", true)
+			slog.Warn("AI triage batch failed in streaming mode; using local fallback ordering", wargs...)
+			res = &aiPkg.TriageResult{}
+		}
+
+		newItems := make([]aiPkg.TriagedFinding, 0, max(1, len(chunk)))
+		if strings.TrimSpace(res.Summary) != "" {
+			merged.Summary += fmt.Sprintf("\n[Batch %d/%d] %s", idx+1, len(chunks), strings.TrimSpace(res.Summary))
+		}
+		if len(res.Prioritised) == 0 {
+			for _, fd := range chunk {
+				tf := aiPkg.TriagedFinding{
+					FindingID:    fd.ID,
+					Priority:     nextPriority,
+					Rationale:    "Added from chunk fallback ordering.",
+					SuggestedFix: "",
+					Finding:      fd,
+				}
+				merged.Prioritised = append(merged.Prioritised, tf)
+				newItems = append(newItems, tf)
+				nextPriority++
+			}
+		} else {
+			for _, tf := range res.Prioritised {
+				tf.Priority = nextPriority
+				if tf.Finding.ID == "" {
+					for _, fd := range chunk {
+						if fd.ID == tf.FindingID {
+							tf.Finding = fd
+							break
+						}
+					}
+				}
+				merged.Prioritised = append(merged.Prioritised, tf)
+				newItems = append(newItems, tf)
+				nextPriority++
+			}
+		}
+		f.persistTriageCheckpoint(ctx, job.RemediationTaskID, merged, idx+1, len(chunks))
+		outcome.TriagePrioritisedJSON = mustJSONTriagedFindings(merged.Prioritised, outcome.TriagePrioritisedJSON)
+		outcome.TriageSummary = merged.Summary
+		outcome.TriageStatus = "running"
+
+		f.reportRemediationProgress(ctx, job, remediationProgressEvent{
+			Phase: "triage", PhaseLabel: "AI triage + fix streaming", Current: idx + 1, Total: len(chunks),
+			Percent: progressPercent(idx+1, len(chunks)),
+			Note:    fmt.Sprintf("completed triage batch %d/%d", idx+1, len(chunks)),
+		})
+
+		for _, tf := range newItems {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if outcome.FixAttempted >= maxFixAttemptsPerTaskDefault {
+				iargs := append(remediationJobLogFields(job), "attempt_cap", maxFixAttemptsPerTaskDefault)
+				slog.Info("Reached fix attempt cap for remediation task", iargs...)
+				break
+			}
+			res := f.generateAndQueueFix(ctx, tf.Finding, job)
+			outcome.FixAttempted++
+			switch res {
+			case fixAttemptQueued:
+				outcome.FixQueued++
+			case fixAttemptLowConf:
+				outcome.FixSkippedLowConfidence++
+			default:
+				outcome.FixFailed++
+			}
+			f.reportRemediationProgress(ctx, job, remediationProgressEvent{
+				Phase:      "fixing",
+				PhaseLabel: "generating fixes (streaming)",
+				Current:    outcome.FixAttempted,
+				Total:      planned,
+				Percent:    progressPercent(outcome.FixAttempted, planned),
+				Note:       fmt.Sprintf("%s %s", fixAttemptLabel(res), strings.TrimSpace(tf.Finding.ID)),
+				FindingID:  strings.TrimSpace(tf.Finding.ID),
+			})
+		}
+	}
+
+	outcome.TriageStatus = "completed"
+	outcome.TriageBatches = len(chunks)
+	outcome.TriageSummary = merged.Summary
+	outcome.TriagePrioritisedJSON = mustJSONTriagedFindings(merged.Prioritised, outcome.TriagePrioritisedJSON)
+	f.reportRemediationProgress(ctx, job, remediationProgressEvent{
+		Phase: "done", PhaseLabel: "complete", Percent: 100,
+		Note: fmt.Sprintf("streaming complete; queued %d/%d fixes", outcome.FixQueued, outcome.FixAttempted),
+	})
+	args := append(remediationJobLogFields(job),
+		"triage_batches", len(chunks),
+		"prioritised", len(merged.Prioritised),
+		"queued", outcome.FixQueued,
+		"attempted", outcome.FixAttempted,
+		"streaming", true,
+	)
+	slog.Info("Triage + fix streaming complete", args...)
+	return nil
+}
+
+func mustJSONTriagedFindings(rows []aiPkg.TriagedFinding, fallback string) string {
+	b, err := json.Marshal(rows)
+	if err != nil {
+		return fallback
+	}
+	return string(b)
 }
 
 func filterFindingsForAIFix(findings []models.FindingSummary) ([]models.FindingSummary, int) {
@@ -526,6 +718,10 @@ func (f *FixerAgent) triageFindingsChunked(ctx context.Context, job fixJob, find
 				})
 				nextPriority++
 			}
+			// Persist checkpoint even when the model returns only a summary (or
+			// malformed JSON parsed as summary). This is common with local models
+			// and should still be resumable after restart.
+			f.persistTriageCheckpoint(ctx, job.RemediationTaskID, merged, idx+1, len(chunks))
 			continue
 		}
 		// Re-number priorities globally while preserving model order within each chunk.
@@ -767,6 +963,9 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 	if err != nil {
 		args := append(remediationJobLogFields(job), "finding_id", finding.ID, "error", err)
 		slog.Warn("Fix generation failed", args...)
+		if f.queueDeterministicSCABumpFallback(ctx, finding, job, "ai_error") {
+			return fixAttemptQueued
+		}
 		return fixAttemptFailed
 	}
 
@@ -776,6 +975,9 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 			"confidence", fixResult.Confidence,
 		)
 		slog.Info("Skipping low-confidence fix", args...)
+		if f.queueDeterministicSCABumpFallback(ctx, finding, job, "low_confidence") {
+			return fixAttemptQueued
+		}
 		return fixAttemptLowConf
 	}
 	if !looksLikeUnifiedDiffPatch(fixResult.Patch) {
@@ -785,6 +987,9 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 			"confidence", fixResult.Confidence,
 		)
 		slog.Warn("Skipping invalid patch output from AI", args...)
+		if f.queueDeterministicSCABumpFallback(ctx, finding, job, "invalid_patch") {
+			return fixAttemptQueued
+		}
 		return fixAttemptFailed
 	}
 
@@ -795,18 +1000,25 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 	}
 
 	now := time.Now().UTC()
+	applyHintsJSON := ""
+	if fixResult.ApplyHints != nil {
+		if b, err := json.Marshal(fixResult.ApplyHints); err == nil {
+			applyHintsJSON = string(b)
+		}
+	}
 	fix := &models.FixQueue{
-		ScanJobID:   job.ScanJobID,
-		FindingType: finding.Type,
-		FindingRef:  finding.ID,
-		AIProvider:  strings.TrimSpace(f.ai.Name()),
-		AIModel:     strings.TrimSpace(f.cfg.AI.Model),
-		AIEndpoint:  strings.TrimSpace(resolveAIEndpointURL(f.cfg.AI)),
-		Patch:       fixResult.Patch,
-		PRTitle:     fmt.Sprintf("fix(security): %s", truncate(finding.Title, 60)),
-		PRBody:      fixResult.Explanation,
-		Status:      status,
-		GeneratedAt: now,
+		ScanJobID:      job.ScanJobID,
+		FindingType:    finding.Type,
+		FindingRef:     finding.ID,
+		AIProvider:     strings.TrimSpace(f.ai.Name()),
+		AIModel:        strings.TrimSpace(f.cfg.AI.Model),
+		AIEndpoint:     strings.TrimSpace(resolveAIEndpointURL(f.cfg.AI)),
+		ApplyHintsJSON: applyHintsJSON,
+		Patch:          fixResult.Patch,
+		PRTitle:        fmt.Sprintf("fix(security): %s", truncate(finding.Title, 60)),
+		PRBody:         fixResult.Explanation,
+		Status:         status,
+		GeneratedAt:    now,
 	}
 
 	if _, err := f.db.Insert(ctx, "fix_queue", fix); err != nil {
@@ -828,6 +1040,132 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 		slog.Info("Semi mode: fix queued for manual review in ctrlscan ui", args...)
 	}
 	return fixAttemptQueued
+}
+
+func (f *FixerAgent) queueDeterministicSCABumpFallback(ctx context.Context, finding models.FindingSummary, job fixJob, reason string) bool {
+	hints, ok := buildSCADependencyBumpHints(finding)
+	if !ok {
+		return false
+	}
+	applyHintsJSON := ""
+	if b, err := json.Marshal(hints); err == nil {
+		applyHintsJSON = string(b)
+	}
+	status := "pending"
+	if f.cfg.Agent.Mode == "auto" {
+		status = "approved"
+	}
+	now := time.Now().UTC()
+	title := fmt.Sprintf("fix(deps): bump %s to %s", truncate(strings.TrimSpace(hints.DependencyName), 40), strings.TrimSpace(hints.TargetVersion))
+	if strings.TrimSpace(hints.DependencyName) == "" || strings.TrimSpace(hints.TargetVersion) == "" {
+		title = fmt.Sprintf("fix(deps): remediate %s", truncate(strings.TrimSpace(finding.Title), 50))
+	}
+	body := fmt.Sprintf(
+		"Deterministic dependency bump fallback queued by ctrlscan.\n\nFinding: %s\nPackage: %s\nTarget version: %s\nEcosystem: %s\nReason: %s\n\nThis fix uses PR-agent apply strategy `dependency_bump` instead of an AI-generated unified diff.",
+		strings.TrimSpace(finding.Title),
+		strings.TrimSpace(hints.DependencyName),
+		strings.TrimSpace(hints.TargetVersion),
+		strings.TrimSpace(hints.Ecosystem),
+		strings.TrimSpace(reason),
+	)
+	fix := &models.FixQueue{
+		ScanJobID:      job.ScanJobID,
+		FindingType:    finding.Type,
+		FindingRef:     finding.ID,
+		AIProvider:     strings.TrimSpace(f.ai.Name()),
+		AIModel:        strings.TrimSpace(f.cfg.AI.Model),
+		AIEndpoint:     strings.TrimSpace(resolveAIEndpointURL(f.cfg.AI)),
+		ApplyHintsJSON: applyHintsJSON,
+		Patch:          "",
+		PRTitle:        title,
+		PRBody:         body,
+		Status:         status,
+		GeneratedAt:    now,
+	}
+	if _, err := f.db.Insert(ctx, "fix_queue", fix); err != nil {
+		args := append(remediationJobLogFields(job), "finding_id", finding.ID, "reason", reason, "error", err)
+		slog.Error("Failed to save deterministic SCA bump fallback to queue", args...)
+		return false
+	}
+	args := append(remediationJobLogFields(job),
+		"finding_id", finding.ID,
+		"package", hints.DependencyName,
+		"target_version", hints.TargetVersion,
+		"ecosystem", hints.Ecosystem,
+		"reason", reason,
+		"status", status,
+	)
+	slog.Info("Queued deterministic SCA dependency bump fallback", args...)
+	return true
+}
+
+func buildSCADependencyBumpHints(finding models.FindingSummary) (aiPkg.ApplyHints, bool) {
+	if !strings.EqualFold(strings.TrimSpace(finding.Type), "sca") {
+		return aiPkg.ApplyHints{}, false
+	}
+	pkg := strings.TrimSpace(finding.Package)
+	ver := strings.TrimSpace(finding.FixVersion)
+	if pkg == "" || ver == "" {
+		return aiPkg.ApplyHints{}, false
+	}
+	path := strings.TrimSpace(strings.ReplaceAll(finding.FilePath, "\\", "/"))
+	lowerPath := strings.ToLower(path)
+	h := aiPkg.ApplyHints{
+		ApplyStrategy:  "dependency_bump",
+		DependencyName: pkg,
+		TargetVersion:  ver,
+		Prerequisites: []string{
+			"Repository must clone successfully and dependency tooling must be available on PATH.",
+		},
+	}
+	switch {
+	case lowerPath == "go.mod" || strings.HasSuffix(lowerPath, "/go.mod"):
+		h.Ecosystem = "go"
+		h.ManifestPath = path
+		h.TargetFiles = []string{path}
+		h.PostApplyChecks = []string{"go mod tidy", "go test ./... (if tests exist)"}
+		h.FallbackPatchNotes = "Use `go get <module>@<version>` in the module directory, then `go mod tidy`."
+		h.RiskNotes = "May update go.sum and transitive dependencies."
+		return h, true
+	case lowerPath == "package-lock.json" || strings.HasSuffix(lowerPath, "/package-lock.json"):
+		h.Ecosystem = "npm"
+		h.LockfilePath = path
+		dir := strings.TrimSuffix(path, "/package-lock.json")
+		if dir == path {
+			dir = ""
+		}
+		if dir == "" {
+			h.ManifestPath = "package.json"
+			h.TargetFiles = []string{"package-lock.json", "package.json"}
+		} else {
+			h.ManifestPath = dir + "/package.json"
+			h.TargetFiles = []string{path, h.ManifestPath}
+		}
+		h.PostApplyChecks = []string{"npm install --package-lock-only --ignore-scripts", "npm audit (optional reviewer check)"}
+		h.FallbackPatchNotes = "package-lock.json is a lockfile, not the source manifest. Prefer npm command-based update in the lockfile directory."
+		h.RiskNotes = "Command may update package-lock.json and package.json depending on dependency type."
+		return h, true
+	case lowerPath == "package.json" || strings.HasSuffix(lowerPath, "/package.json"):
+		h.Ecosystem = "npm"
+		h.ManifestPath = path
+		dir := strings.TrimSuffix(path, "/package.json")
+		if dir == path {
+			dir = ""
+		}
+		if dir == "" {
+			h.LockfilePath = "package-lock.json"
+			h.TargetFiles = []string{"package.json", "package-lock.json"}
+		} else {
+			h.LockfilePath = dir + "/package-lock.json"
+			h.TargetFiles = []string{path, h.LockfilePath}
+		}
+		h.PostApplyChecks = []string{"npm install --package-lock-only --ignore-scripts", "npm test (if configured)"}
+		h.FallbackPatchNotes = "Use npm command-based bump in the package directory to keep package.json and lockfile consistent."
+		h.RiskNotes = "May affect lockfile and transitive resolutions."
+		return h, true
+	default:
+		return aiPkg.ApplyHints{}, false
+	}
 }
 
 func (f *FixerAgent) filterAlreadyGeneratedFixes(ctx context.Context, scanJobID int64, findings []models.FindingSummary) ([]models.FindingSummary, int) {

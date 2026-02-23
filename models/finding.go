@@ -74,20 +74,21 @@ type IaCFinding struct {
 
 // FixQueue tracks AI-generated fixes awaiting PR creation.
 type FixQueue struct {
-	ID          int64      `json:"id"            db:"id"`
-	ScanJobID   int64      `json:"scan_job_id"   db:"scan_job_id"`
-	FindingType string     `json:"finding_type"  db:"finding_type"` // sca|sast|secrets|iac
-	FindingID   int64      `json:"finding_id"    db:"finding_id"`
-	FindingRef  string     `json:"finding_ref"   db:"finding_ref"`
-	AIProvider  string     `json:"ai_provider"   db:"ai_provider"`
-	AIModel     string     `json:"ai_model"      db:"ai_model"`
-	AIEndpoint  string     `json:"ai_endpoint"   db:"ai_endpoint"`
-	Patch       string     `json:"patch"         db:"patch"` // unified diff
-	PRTitle     string     `json:"pr_title"      db:"pr_title"`
-	PRBody      string     `json:"pr_body"       db:"pr_body"`
-	Status      string     `json:"status"        db:"status"` // pending|approved|rejected|pr_open|pr_merged
-	PRNumber    int        `json:"pr_number"     db:"pr_number"`
-	PRURL       string     `json:"pr_url"        db:"pr_url"`
-	GeneratedAt time.Time  `json:"generated_at"  db:"generated_at"`
-	ApprovedAt  *time.Time `json:"approved_at"   db:"approved_at"`
+	ID             int64      `json:"id"            db:"id"`
+	ScanJobID      int64      `json:"scan_job_id"   db:"scan_job_id"`
+	FindingType    string     `json:"finding_type"  db:"finding_type"` // sca|sast|secrets|iac
+	FindingID      int64      `json:"finding_id"    db:"finding_id"`
+	FindingRef     string     `json:"finding_ref"   db:"finding_ref"`
+	AIProvider     string     `json:"ai_provider"   db:"ai_provider"`
+	AIModel        string     `json:"ai_model"      db:"ai_model"`
+	AIEndpoint     string     `json:"ai_endpoint"   db:"ai_endpoint"`
+	ApplyHintsJSON string     `json:"apply_hints_json" db:"apply_hints_json"`
+	Patch          string     `json:"patch"         db:"patch"` // unified diff
+	PRTitle        string     `json:"pr_title"      db:"pr_title"`
+	PRBody         string     `json:"pr_body"       db:"pr_body"`
+	Status         string     `json:"status"        db:"status"` // pending|approved|rejected|pr_open|pr_merged
+	PRNumber       int        `json:"pr_number"     db:"pr_number"`
+	PRURL          string     `json:"pr_url"        db:"pr_url"`
+	GeneratedAt    time.Time  `json:"generated_at"  db:"generated_at"`
+	ApprovedAt     *time.Time `json:"approved_at"   db:"approved_at"`
 }

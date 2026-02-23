@@ -1862,7 +1862,7 @@ func (gw *Gateway) handleListJobFixes(w http.ResponseWriter, r *http.Request) {
 	}
 	var rows []fixQueueRow
 	if err := gw.db.Select(r.Context(), &rows,
-		`SELECT id, scan_job_id, finding_type, finding_id, ai_provider, ai_model, ai_endpoint, pr_title, pr_body,
+		`SELECT id, scan_job_id, finding_type, finding_id, ai_provider, ai_model, ai_endpoint, apply_hints_json, pr_title, pr_body,
 		        status, pr_url, generated_at, approved_at
 		   FROM fix_queue
 		  WHERE scan_job_id = ?
@@ -2820,19 +2820,20 @@ func (gw *Gateway) handleListFindings(w http.ResponseWriter, r *http.Request) {
 
 // fixQueueRow maps a row from the fix_queue table.
 type fixQueueRow struct {
-	ID          int64   `db:"id"           json:"id"`
-	ScanJobID   int64   `db:"scan_job_id"  json:"scan_job_id"`
-	FindingType string  `db:"finding_type" json:"finding_type"`
-	FindingID   int64   `db:"finding_id"   json:"finding_id"`
-	AIProvider  string  `db:"ai_provider"  json:"ai_provider,omitempty"`
-	AIModel     string  `db:"ai_model"     json:"ai_model,omitempty"`
-	AIEndpoint  string  `db:"ai_endpoint"  json:"ai_endpoint,omitempty"`
-	PRTitle     string  `db:"pr_title"     json:"pr_title"`
-	PRBody      string  `db:"pr_body"      json:"pr_body"`
-	Status      string  `db:"status"       json:"status"`
-	PRURL       string  `db:"pr_url"       json:"pr_url,omitempty"`
-	GeneratedAt string  `db:"generated_at" json:"generated_at"`
-	ApprovedAt  *string `db:"approved_at"  json:"approved_at,omitempty"`
+	ID             int64   `db:"id"           json:"id"`
+	ScanJobID      int64   `db:"scan_job_id"  json:"scan_job_id"`
+	FindingType    string  `db:"finding_type" json:"finding_type"`
+	FindingID      int64   `db:"finding_id"   json:"finding_id"`
+	AIProvider     string  `db:"ai_provider"  json:"ai_provider,omitempty"`
+	AIModel        string  `db:"ai_model"     json:"ai_model,omitempty"`
+	AIEndpoint     string  `db:"ai_endpoint"  json:"ai_endpoint,omitempty"`
+	ApplyHintsJSON string  `db:"apply_hints_json" json:"apply_hints_json,omitempty"`
+	PRTitle        string  `db:"pr_title"     json:"pr_title"`
+	PRBody         string  `db:"pr_body"      json:"pr_body"`
+	Status         string  `db:"status"       json:"status"`
+	PRURL          string  `db:"pr_url"       json:"pr_url,omitempty"`
+	GeneratedAt    string  `db:"generated_at" json:"generated_at"`
+	ApprovedAt     *string `db:"approved_at"  json:"approved_at,omitempty"`
 }
 
 func (gw *Gateway) handleListFixQueue(w http.ResponseWriter, r *http.Request) {
@@ -2844,7 +2845,7 @@ func (gw *Gateway) handleListFixQueue(w http.ResponseWriter, r *http.Request) {
 
 	var rows []fixQueueRow
 	if err := gw.db.Select(ctx, &rows,
-		`SELECT id, scan_job_id, finding_type, finding_id, ai_provider, ai_model, ai_endpoint, pr_title, pr_body,
+		`SELECT id, scan_job_id, finding_type, finding_id, ai_provider, ai_model, ai_endpoint, apply_hints_json, pr_title, pr_body,
 		        status, pr_url, generated_at, approved_at
 		 FROM fix_queue WHERE status = ? ORDER BY id DESC LIMIT 100`,
 		status,
@@ -3110,6 +3111,7 @@ type remediationCampaignCreateRequest struct {
 	Mode       string   `json:"mode"`    // triage|semi|auto
 	AutoPR     bool     `json:"auto_pr"` // trigger PR processing for approved fixes
 	StartNow   bool     `json:"start_now"`
+	Force      bool     `json:"force,omitempty"`
 	Repos      []string `json:"repos"` // owner/repo list (optional)
 	ScanJobIDs []int64  `json:"scan_job_ids,omitempty"`
 	MaxRepos   int      `json:"max_repos"` // optional limit
@@ -3229,6 +3231,22 @@ func (gw *Gateway) handleCreateRemediationCampaign(w http.ResponseWriter, r *htt
 	if !req.LatestOnly {
 		req.LatestOnly = true
 	}
+	if !req.Force && len(req.ScanJobIDs) > 0 {
+		conflicts, err := gw.findActiveRemediationCampaignConflicts(r.Context(), req.ScanJobIDs)
+		if err != nil {
+			slog.Warn("Failed checking remediation campaign conflicts", "scan_job_ids", req.ScanJobIDs, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to check existing remediation campaigns")
+			return
+		}
+		if len(conflicts) > 0 {
+			parts := make([]string, 0, len(conflicts))
+			for _, c := range conflicts {
+				parts = append(parts, fmt.Sprintf("scan #%d in campaign #%d (%s)", c.ScanJobID, c.CampaignID, c.CampaignStatus))
+			}
+			writeError(w, http.StatusConflict, "an active remediation campaign already exists for this scan ("+strings.Join(parts, "; ")+"); stop it first or retry with force=true")
+			return
+		}
+	}
 	filtersJSON, _ := json.Marshal(map[string]any{
 		"repos": req.Repos, "max_repos": req.MaxRepos, "latest_only": req.LatestOnly,
 		"scan_job_ids": req.ScanJobIDs,
@@ -3271,6 +3289,35 @@ func (gw *Gateway) handleCreateRemediationCampaign(w http.ResponseWriter, r *htt
 		gw.broadcaster.send(SSEEvent{Type: "campaign.started", Payload: map[string]any{"campaign_id": id}})
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "status": status})
+}
+
+type remediationCampaignScanConflict struct {
+	CampaignID     int64  `db:"campaign_id"`
+	CampaignStatus string `db:"campaign_status"`
+	ScanJobID      int64  `db:"scan_job_id"`
+}
+
+func (gw *Gateway) findActiveRemediationCampaignConflicts(ctx context.Context, scanJobIDs []int64) ([]remediationCampaignScanConflict, error) {
+	if len(scanJobIDs) == 0 {
+		return nil, nil
+	}
+	query := fmt.Sprintf(`
+SELECT DISTINCT t.campaign_id AS campaign_id, c.status AS campaign_status, t.scan_job_id AS scan_job_id
+FROM remediation_tasks t
+JOIN remediation_campaigns c ON c.id = t.campaign_id
+WHERE t.scan_job_id IN (%s)
+  AND c.status IN ('draft','running')
+ORDER BY t.campaign_id DESC, t.scan_job_id ASC
+LIMIT 20
+`, placeholders(len(scanJobIDs)))
+	var rows []remediationCampaignScanConflict
+	if err := gw.db.Select(ctx, &rows, query, toAnyArgs(scanJobIDs)...); err != nil {
+		if hint := remediationSchemaHint(err); hint != "" {
+			return nil, fmt.Errorf("%s", hint)
+		}
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (gw *Gateway) handleStartRemediationCampaign(w http.ResponseWriter, r *http.Request) {

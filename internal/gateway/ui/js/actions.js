@@ -1,6 +1,13 @@
 import { api } from "./api.js";
 // Circular imports — all usages are inside function bodies.
-import { closeTriggerModal, openCronRepoPicker, renderPathIgnoreModal, showConfirm, showNotice, showPrompt } from "./modals.js";
+import {
+  closeTriggerModal,
+  openCronRepoPicker,
+  renderPathIgnoreModal,
+  showConfirm,
+  showNotice,
+  showPrompt,
+} from "./modals.js";
 import { setView } from "./router.js";
 import { state } from "./state.js";
 import { handleToastForEvent, showToast } from "./toast.js";
@@ -176,9 +183,8 @@ export async function refreshJobs() {
     const totalPages = Math.max(1, Number(state.jobsTotalPages || 1));
     if ((state.scansPage || 1) > totalPages) state.scansPage = totalPages;
     reconcileSelectedJobs();
-    if (state.selectedJobId && !state.jobs.some((j) => j.id === state.selectedJobId)) {
-      clearSelectedJob();
-    }
+    // Do not clear selected job just because it is not present on the current paginated jobs page.
+    // The scan may still exist and be open in `/ui/scans/:id`; absence here only means "not on this page".
   } finally {
     state.scansLoading = false;
     renderScans();
@@ -261,9 +267,15 @@ export async function loadSelectedJobCommitHistory() {
 
 export async function selectJob(id, opts = {}) {
   const showLoading = !!opts.showLoading;
+  const switchingJobs = Number(state.selectedJobId || 0) !== Number(id || 0);
+  const hasExistingDetail = !!state.selectedJob;
+  const shouldShowInlineLoading = switchingJobs || !hasExistingDetail;
+  const shouldShowBackgroundSync = !shouldShowInlineLoading;
   if (showLoading) showGlobalLoading("Loading scan detail…");
-  state.selectedJobLoading = true;
-  if (state.view === "scan-detail") renderScanDetailPage();
+  state.selectedJobLoading = shouldShowInlineLoading;
+  state.selectedJobSyncing = shouldShowBackgroundSync;
+  if (state.view === "scan-detail" && shouldShowInlineLoading) renderScanDetailPage();
+  if (state.view === "scan-detail" && shouldShowBackgroundSync) renderScanDetailPage();
   state.selectedJobId = id;
   if (!opts.preserveFindingsState) {
     state.scanDetailFindingsPage = 1;
@@ -290,6 +302,7 @@ export async function selectJob(id, opts = {}) {
     if (state.view === "scan-detail") renderScanDetailPage();
   } finally {
     state.selectedJobLoading = false;
+    state.selectedJobSyncing = false;
     if (state.view === "scan-detail") renderScanDetailPage();
     if (showLoading) hideGlobalLoading();
   }
@@ -318,6 +331,7 @@ export function clearSelectedJob() {
   state.scanDetailFindingsPage = 1;
   state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "", title: "", path: "", q: "" };
   state.scanDetailFindingsDraft = { title: "", path: "", q: "" };
+  state.selectedJobSyncing = false;
 }
 
 export async function deleteOneScanJob(id) {
@@ -331,12 +345,11 @@ export async function deleteOneScanJob(id) {
       message: `Delete scan job #${id} (${label})? This removes stored findings and raw outputs for the job.`,
       confirmLabel: "Delete",
     }))
-  )
-    {
-      state.scansActionBusy = "";
-      renderScans();
-      return;
-    }
+  ) {
+    state.scansActionBusy = "";
+    renderScans();
+    return;
+  }
   try {
     await api(`/api/jobs/${id}`, { method: "DELETE" });
     delete state.selectedScanJobIds[id];
@@ -367,12 +380,11 @@ export async function deleteSelectedScanJobs() {
       message: `Delete ${ids.length} selected scan job${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
       confirmLabel: "Delete Selected",
     }))
-  )
-    {
-      state.scansActionBusy = "";
-      renderScans();
-      return;
-    }
+  ) {
+    state.scansActionBusy = "";
+    renderScans();
+    return;
+  }
   try {
     const res = await api("/api/jobs", { method: "DELETE", body: JSON.stringify({ ids }) });
     if (Array.isArray(res.deleted_ids)) {
@@ -518,18 +530,6 @@ export async function setPaused(paused) {
 
 /* ---- Cron ---- */
 
-function parseCronTargetsCsv(raw) {
-  const seen = new Set();
-  const out = [];
-  for (const part of String(raw || "").split(",")) {
-    const v = part.trim();
-    if (!v || seen.has(v)) continue;
-    seen.add(v);
-    out.push(v);
-  }
-  return out;
-}
-
 function parseCronMultiline(raw) {
   return String(raw || "")
     .split("\n")
@@ -587,7 +587,9 @@ function readCronForm() {
   const repoLines = parseCronMultiline(root.querySelector("#cronRepos").value);
   const ownerLines = parseCronMultiline(root.querySelector("#cronOwners").value);
   const ownerPrefixLines = parseCronMultiline(root.querySelector("#cronOwnerPrefixes").value);
-  const targets = [...root.querySelectorAll("input[type='checkbox'][data-cron-target]:checked")].map((el) => el.dataset.cronTarget);
+  const targets = [...root.querySelectorAll("input[type='checkbox'][data-cron-target]:checked")].map(
+    (el) => el.dataset.cronTarget
+  );
   const enabled = !!root.querySelector("#cronEnabled")?.checked;
   if (!name || !expr) {
     throw new Error("Name and expression are required.");
@@ -781,12 +783,11 @@ export async function triggerCron(id) {
 export async function deleteCron(id) {
   state.cronActionBusy = `delete:${id}`;
   renderCron();
-  if (!(await showConfirm({ title: "Delete Schedule", message: `Delete schedule #${id}?`, confirmLabel: "Delete" })))
-    {
-      state.cronActionBusy = "";
-      renderCron();
-      return;
-    }
+  if (!(await showConfirm({ title: "Delete Schedule", message: `Delete schedule #${id}?`, confirmLabel: "Delete" }))) {
+    state.cronActionBusy = "";
+    renderCron();
+    return;
+  }
   try {
     await api(`/api/schedules/${id}`, { method: "DELETE" });
     await refreshCron();
@@ -996,6 +997,27 @@ export async function launchReviewCampaignForSelectedScan() {
     showNotice("AI Not Enabled", "Configure an AI provider in Config before launching an AI review campaign.");
     return;
   }
+  let forceCreate = false;
+  try {
+    const runsRes = await api(`/api/jobs/${job.id}/remediation?page=1&page_size=25`);
+    const runs = Array.isArray(runsRes?.items) ? runsRes.items : Array.isArray(runsRes) ? runsRes : [];
+    const activeRuns = runs.filter((r) => ["draft", "running"].includes(String(r.campaign_status || "").toLowerCase()));
+    if (activeRuns.length > 0) {
+      const labels = activeRuns
+        .slice(0, 3)
+        .map((r) => `#${Number(r.campaign_id || 0)} (${String(r.campaign_status || "").toLowerCase() || "active"})`)
+        .join(", ");
+      const confirmed = await showConfirm({
+        title: "Existing AI Review Campaign Found",
+        message: `Scan #${job.id} already has an active review campaign (${labels}${activeRuns.length > 3 ? ", ..." : ""}). Launch another anyway?`,
+        confirmLabel: "Force Launch",
+      });
+      if (!confirmed) return;
+      forceCreate = true;
+    }
+  } catch (_) {
+    // Best effort pre-check; backend also enforces duplicate prevention unless force=true.
+  }
   let res = null;
   try {
     res = await api("/api/remediation/campaigns", {
@@ -1008,6 +1030,7 @@ export async function launchReviewCampaignForSelectedScan() {
         latest_only: false,
         scan_job_ids: [job.id],
         max_repos: 1,
+        force: forceCreate,
       }),
     });
     showToast({

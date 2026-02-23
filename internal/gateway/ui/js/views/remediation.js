@@ -1,16 +1,36 @@
 // Circular imports — all usages are inside function bodies.
 import {
   createRemediationCampaign,
+  openScanDetailPage,
   refreshRemediation,
   refreshRemediationRepoSuggestions,
   refreshRemediationTasks,
-  selectJob,
   startRemediationCampaign,
   stopRemediationCampaign,
 } from "../actions.js";
-import { setView } from "../router.js";
 import { state } from "../state.js";
 import { escapeHtml, fmtDate, setHtml, statusClass } from "../utils.js";
+
+function capturePreservedScroll(root) {
+  if (!root) return {};
+  const saved = {};
+  root.querySelectorAll("[data-preserve-scroll-key]").forEach((el) => {
+    const key = String(el.getAttribute("data-preserve-scroll-key") || "").trim();
+    if (!key) return;
+    saved[key] = { top: Number(el.scrollTop || 0), left: Number(el.scrollLeft || 0) };
+  });
+  return saved;
+}
+
+function restorePreservedScroll(root, saved) {
+  if (!root || !saved) return;
+  root.querySelectorAll("[data-preserve-scroll-key]").forEach((el) => {
+    const key = String(el.getAttribute("data-preserve-scroll-key") || "").trim();
+    if (!key || !saved[key]) return;
+    el.scrollTop = Number(saved[key].top || 0);
+    el.scrollLeft = Number(saved[key].left || 0);
+  });
+}
 
 function getScannedRepoLabel(r) {
   const owner = String(r?.owner || "").trim();
@@ -33,9 +53,7 @@ function formatAIOrigin(r) {
   const provider = String(r?.ai_provider || "").trim();
   const model = String(r?.ai_model || "").trim();
   const endpoint = String(r?.ai_endpoint || "").trim();
-  const endpointLabel = endpoint
-    ? endpoint.replace(/^https?:\/\//i, "").replace(/\/v1\/?$/i, "")
-    : "";
+  const endpointLabel = endpoint ? endpoint.replace(/^https?:\/\//i, "").replace(/\/v1\/?$/i, "") : "";
   const pm = [provider, model].filter(Boolean).join(" / ");
   if (pm && endpointLabel) return `${pm} @ ${endpointLabel}`;
   if (pm) return pm;
@@ -62,6 +80,7 @@ function formatProgress(r) {
 export function renderRemediation() {
   const root = document.getElementById("view-remediation");
   if (!root) return;
+  const preservedScroll = capturePreservedScroll(root);
   const campaigns = state.remediationCampaigns || [];
   const draft = state.remediationDraft || {};
   let selected = campaigns.find((c) => c.id === state.remediationSelectedCampaignId) || null;
@@ -101,7 +120,7 @@ export function renderRemediation() {
                 <span class="muted">${state.remediationRepoSuggestionsLoading ? "Loading scanned repos…" : "Choose from previously scanned repos"}</span>
                 <button id="remRepoReload" class="btn btn-secondary">Reload</button>
               </div>
-              <div class="table-wrap" style="max-height:180px; margin-top:8px">
+              <div class="table-wrap" data-preserve-scroll-key="remediation:repo-suggestions" style="max-height:180px; margin-top:8px">
                 <table>
                   <thead><tr><th>Repo</th><th>Provider</th><th>Action</th></tr></thead>
                   <tbody>
@@ -134,7 +153,7 @@ export function renderRemediation() {
         </div>
         <div class="card">
           <h3>Worker Activity</h3>
-          <div class="table-wrap">
+          <div class="table-wrap" data-preserve-scroll-key="remediation:workers">
             <table>
               <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Action</th><th>Repo</th><th>Updated</th></tr></thead>
               <tbody>
@@ -161,7 +180,7 @@ export function renderRemediation() {
       <div class="split">
         <div class="card">
           <h3>Campaigns</h3>
-          <div class="table-wrap">
+          <div class="table-wrap" data-preserve-scroll-key="remediation:campaigns">
             <table>
               <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Mode</th><th>Tasks</th><th>Actions</th></tr></thead>
               <tbody>
@@ -191,7 +210,7 @@ export function renderRemediation() {
 
         <div class="card">
           <h3>Campaign Tasks ${selected ? `#${selected.id}` : ""}</h3>
-          <div class="table-wrap">
+          <div class="table-wrap" data-preserve-scroll-key="remediation:tasks">
             <table>
               <thead><tr><th>ID</th><th>Repo</th><th>Scan Job</th><th>Status</th><th>AI Model</th><th>Progress</th><th>Worker</th><th>Message</th></tr></thead>
               <tbody>
@@ -219,6 +238,7 @@ export function renderRemediation() {
     </div>
   `
   );
+  restorePreservedScroll(root, preservedScroll);
 
   root.querySelector("#remRefresh")?.addEventListener("click", refreshRemediation);
   root.querySelector("#remCreate")?.addEventListener("click", createRemediationCampaign);
@@ -300,8 +320,7 @@ export function renderRemediation() {
     tr.addEventListener("click", async () => {
       const scanJobID = Number(tr.dataset.remTaskScanJobId || 0);
       if (!scanJobID) return;
-      await selectJob(scanJobID, { preserveFindingsState: false, preserveRemediationState: true });
-      setView("scan-detail");
+      await openScanDetailPage(scanJobID, { pushHistory: true });
     })
   );
 }

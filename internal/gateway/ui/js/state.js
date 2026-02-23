@@ -96,6 +96,7 @@ export const state = {
   navPendingView: "",
   scansLoading: false,
   selectedJobLoading: false,
+  selectedJobSyncing: false,
   scansActionBusy: "",
   cronActionBusy: "",
   fixActionBusyKey: "",

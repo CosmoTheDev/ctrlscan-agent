@@ -256,16 +256,11 @@ function getPreviewSampleRepos() {
 }
 
 function repoMatchesPreviewSearch(repo, rawSearch) {
-  const q = String(rawSearch || "").trim().toLowerCase();
+  const q = String(rawSearch || "")
+    .trim()
+    .toLowerCase();
   if (!q) return true;
-  const hay = [
-    repo.full_name,
-    repo.owner,
-    repo.name,
-    repo.provider,
-    repo.host,
-    repo.language,
-  ]
+  const hay = [repo.full_name, repo.owner, repo.name, repo.provider, repo.host, repo.language]
     .map((v) => String(v || "").toLowerCase())
     .join(" ");
   return hay.includes(q);
@@ -363,10 +358,9 @@ export function renderTriggerPreview() {
   const currentLimit = Number(state.triggerPreview.limit || 10);
   const canShowMore = currentLimit < 50;
   const sectionsHtml = data.targets
-    .map(
-      (t) => {
-        const targetRepos = (t.samples || []).filter((r) => repoMatchesPreviewSearch(r, searchValue));
-        return `
+    .map((t) => {
+      const targetRepos = (t.samples || []).filter((r) => repoMatchesPreviewSearch(r, searchValue));
+      return `
     <div class="preview-section">
       <h4>${escapeHtml(targetMeta[t.target]?.label || t.target)}</h4>
       <div class="preview-meta">${t.repo_count || 0} repositories visible${t.samples && t.samples.length < (t.repo_count || 0) ? ` (showing ${t.samples.length})` : ""}${searchValue ? ` • filtered to ${targetRepos.length}` : ""}</div>
@@ -384,14 +378,14 @@ export function renderTriggerPreview() {
           </label>
         `
             )
-            .join("") || `<div class="muted">${searchValue ? "No repositories matched this filter." : "No repositories matched this target."}</div>`
+            .join("") ||
+          `<div class="muted">${searchValue ? "No repositories matched this filter." : "No repositories matched this target."}</div>`
         }
       </div>
       ${t.errors?.length ? `<div class="preview-errors">${escapeHtml(t.errors.join(" | "))}</div>` : ""}
     </div>
   `;
-      }
-    )
+    })
     .join("");
   const toolbarHtml = `
     <div class="toolbar preview-toolbar">
@@ -458,7 +452,10 @@ export async function fetchTriggerPreview() {
   try {
     state.triggerPreview.data = await api("/api/agent/preview", {
       method: "POST",
-      body: JSON.stringify({ scan_targets: state.triggerPlan.targets, limit: Number(state.triggerPreview.limit || 10) }),
+      body: JSON.stringify({
+        scan_targets: state.triggerPlan.targets,
+        limit: Number(state.triggerPreview.limit || 10),
+      }),
     });
     reconcileSelectedPreviewRepos();
   } catch (err) {
@@ -495,8 +492,7 @@ export function openTriggerModal() {
 
 export function openCronRepoPicker({ targets = [], selectedRepos = [] } = {}) {
   triggerModalMode = "cron-picker";
-  state.triggerPlan.targets =
-    Array.isArray(targets) && targets.length > 0 ? [...targets] : getDefaultTriggerTargets();
+  state.triggerPlan.targets = Array.isArray(targets) && targets.length > 0 ? [...targets] : getDefaultTriggerTargets();
   state.triggerPlan.workers = "";
   state.triggerPlan.selectedRepoMap = {};
   for (const r of Array.isArray(selectedRepos) ? selectedRepos : []) {

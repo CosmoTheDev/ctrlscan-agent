@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -47,20 +48,21 @@ func (a *PRAgent) ProcessApprovedFixes(ctx context.Context) {
 
 func (a *PRAgent) drainApprovedFixes(ctx context.Context) {
 	type fixRow struct {
-		ID          int64  `db:"id"`
-		ScanJobID   int64  `db:"scan_job_id"`
-		FindingType string `db:"finding_type"`
-		FindingID   int64  `db:"finding_id"`
-		Patch       string `db:"patch"`
-		PRTitle     string `db:"pr_title"`
-		PRBody      string `db:"pr_body"`
-		Status      string `db:"status"`
-		PRNumber    int    `db:"pr_number"`
-		PRURL       string `db:"pr_url"`
+		ID             int64  `db:"id"`
+		ScanJobID      int64  `db:"scan_job_id"`
+		FindingType    string `db:"finding_type"`
+		FindingID      int64  `db:"finding_id"`
+		ApplyHintsJSON string `db:"apply_hints_json"`
+		Patch          string `db:"patch"`
+		PRTitle        string `db:"pr_title"`
+		PRBody         string `db:"pr_body"`
+		Status         string `db:"status"`
+		PRNumber       int    `db:"pr_number"`
+		PRURL          string `db:"pr_url"`
 	}
 	var rows []fixRow
 	if err := a.db.Select(ctx, &rows,
-		`SELECT id, scan_job_id, finding_type, finding_id, patch, pr_title, pr_body, status, pr_number, pr_url
+		`SELECT id, scan_job_id, finding_type, finding_id, apply_hints_json, patch, pr_title, pr_body, status, pr_number, pr_url
 		   FROM fix_queue
 		  WHERE status = 'approved'
 		  ORDER BY id ASC
@@ -74,16 +76,17 @@ func (a *PRAgent) drainApprovedFixes(ctx context.Context) {
 			return
 		}
 		fix := models.FixQueue{
-			ID:          row.ID,
-			ScanJobID:   row.ScanJobID,
-			FindingType: row.FindingType,
-			FindingID:   row.FindingID,
-			Patch:       row.Patch,
-			PRTitle:     row.PRTitle,
-			PRBody:      row.PRBody,
-			Status:      row.Status,
-			PRNumber:    row.PRNumber,
-			PRURL:       row.PRURL,
+			ID:             row.ID,
+			ScanJobID:      row.ScanJobID,
+			FindingType:    row.FindingType,
+			FindingID:      row.FindingID,
+			ApplyHintsJSON: row.ApplyHintsJSON,
+			Patch:          row.Patch,
+			PRTitle:        row.PRTitle,
+			PRBody:         row.PRBody,
+			Status:         row.Status,
+			PRNumber:       row.PRNumber,
+			PRURL:          row.PRURL,
 		}
 		if err := a.createPR(ctx, fix); err != nil {
 			if isRetryablePRCreationError(err) {
@@ -102,7 +105,14 @@ func (a *PRAgent) drainApprovedFixes(ctx context.Context) {
 }
 
 func (a *PRAgent) createPR(ctx context.Context, fix models.FixQueue) error {
-	slog.Info("Creating PR for fix", "fix_id", fix.ID)
+	hints := parseApplyHintsJSON(fix.ApplyHintsJSON)
+	slog.Info("Creating PR for fix",
+		"fix_id", fix.ID,
+		"scan_job_id", fix.ScanJobID,
+		"apply_strategy", strings.TrimSpace(hints.ApplyStrategy),
+		"hint_target_files", len(hints.TargetFiles),
+		"hint_checks", len(hints.PostApplyChecks),
+	)
 
 	// Load the scan job to get repo details.
 	var job struct {
@@ -167,9 +177,15 @@ func (a *PRAgent) createPR(ctx context.Context, fix models.FixQueue) error {
 		return fmt.Errorf("creating branch: %w", err)
 	}
 
-	// Apply the patch.
-	if err := applyPatch(cloneResult.LocalPath, fix.Patch); err != nil {
-		return fmt.Errorf("applying patch: %w", err)
+	// Apply the change (patch by default, deterministic dependency bump when requested).
+	if strings.EqualFold(strings.TrimSpace(hints.ApplyStrategy), "dependency_bump") {
+		if err := applyDependencyBump(ctx, cloneResult.LocalPath, hints); err != nil {
+			return fmt.Errorf("applying dependency bump (ecosystem=%s pkg=%s version=%s): %w",
+				strings.TrimSpace(hints.Ecosystem), strings.TrimSpace(hints.DependencyName), strings.TrimSpace(hints.TargetVersion), err)
+		}
+	} else if err := applyPatch(cloneResult.LocalPath, fix.Patch); err != nil {
+		return fmt.Errorf("applying patch (strategy=%s targets=%d): %w",
+			strings.TrimSpace(hints.ApplyStrategy), len(hints.TargetFiles), err)
 	}
 
 	// Commit the change.
@@ -235,6 +251,19 @@ func (a *PRAgent) createPR(ctx context.Context, fix models.FixQueue) error {
 	return nil
 }
 
+func parseApplyHintsJSON(raw string) aiPkg.ApplyHints {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return aiPkg.ApplyHints{}
+	}
+	var hints aiPkg.ApplyHints
+	if err := json.Unmarshal([]byte(raw), &hints); err != nil {
+		slog.Warn("Failed to parse fix apply_hints_json", "error", err)
+		return aiPkg.ApplyHints{}
+	}
+	return hints
+}
+
 // --- git helpers ---
 
 func gitCreateBranch(repoPath, branch string) error {
@@ -271,6 +300,52 @@ func applyPatch(repoPath, patch string) error {
 	}
 	defer os.Remove(patchFile)
 	return runGit(repoPath, "apply", patchFile)
+}
+
+func applyDependencyBump(ctx context.Context, repoPath string, hints aiPkg.ApplyHints) error {
+	pkg := strings.TrimSpace(hints.DependencyName)
+	ver := strings.TrimSpace(hints.TargetVersion)
+	if pkg == "" || ver == "" {
+		return fmt.Errorf("missing dependency_name or target_version in apply hints")
+	}
+	eco := strings.ToLower(strings.TrimSpace(hints.Ecosystem))
+	switch eco {
+	case "go":
+		workdir := repoPath
+		if mp := strings.TrimSpace(hints.ManifestPath); mp != "" {
+			workdir = filepath.Join(repoPath, filepath.Dir(mp))
+		}
+		if err := runCmd(ctx, workdir, "go", "get", fmt.Sprintf("%s@%s", pkg, ver)); err != nil {
+			return err
+		}
+		_ = runCmd(ctx, workdir, "go", "mod", "tidy")
+		return nil
+	case "npm":
+		workdir := repoPath
+		basePath := strings.TrimSpace(hints.LockfilePath)
+		if basePath == "" {
+			basePath = strings.TrimSpace(hints.ManifestPath)
+		}
+		if basePath != "" {
+			workdir = filepath.Join(repoPath, filepath.Dir(basePath))
+		}
+		if err := runCmd(ctx, workdir, "npm", "install", "--package-lock-only", "--ignore-scripts", fmt.Sprintf("%s@%s", pkg, ver)); err != nil {
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported dependency_bump ecosystem %q", hints.Ecosystem)
+	}
+}
+
+func runCmd(ctx context.Context, dir, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, string(out))
+	}
+	return nil
 }
 
 func runGit(dir string, args ...string) error {

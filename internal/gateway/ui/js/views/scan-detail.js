@@ -20,13 +20,32 @@ import {
   statusClass,
 } from "../utils.js";
 
+function capturePreservedScroll(root) {
+  if (!root) return {};
+  const saved = {};
+  root.querySelectorAll("[data-preserve-scroll-key]").forEach((el) => {
+    const key = String(el.getAttribute("data-preserve-scroll-key") || "").trim();
+    if (!key) return;
+    saved[key] = { top: Number(el.scrollTop || 0), left: Number(el.scrollLeft || 0) };
+  });
+  return saved;
+}
+
+function restorePreservedScroll(root, saved) {
+  if (!root || !saved) return;
+  root.querySelectorAll("[data-preserve-scroll-key]").forEach((el) => {
+    const key = String(el.getAttribute("data-preserve-scroll-key") || "").trim();
+    if (!key || !saved[key]) return;
+    el.scrollTop = Number(saved[key].top || 0);
+    el.scrollLeft = Number(saved[key].left || 0);
+  });
+}
+
 function formatAIOrigin(r) {
   const provider = String(r?.ai_provider || "").trim();
   const model = String(r?.ai_model || "").trim();
   const endpoint = String(r?.ai_endpoint || "").trim();
-  const endpointLabel = endpoint
-    ? endpoint.replace(/^https?:\/\//i, "").replace(/\/v1\/?$/i, "")
-    : "";
+  const endpointLabel = endpoint ? endpoint.replace(/^https?:\/\//i, "").replace(/\/v1\/?$/i, "") : "";
   const pm = [provider, model].filter(Boolean).join(" / ");
   if (pm && endpointLabel) return `${pm} @ ${endpointLabel}`;
   if (pm) return pm;
@@ -50,8 +69,24 @@ function formatProgress(r) {
   return out;
 }
 
+function summarizeApplyHints(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  try {
+    const h = JSON.parse(text);
+    const parts = [];
+    if (h?.apply_strategy) parts.push(String(h.apply_strategy));
+    if (Array.isArray(h?.target_files) && h.target_files.length) parts.push(`${h.target_files.length} file${h.target_files.length === 1 ? "" : "s"}`);
+    if (Array.isArray(h?.post_apply_checks) && h.post_apply_checks.length) parts.push(`${h.post_apply_checks.length} check${h.post_apply_checks.length === 1 ? "" : "s"}`);
+    return parts.join(" • ") || "apply hints";
+  } catch {
+    return "apply hints";
+  }
+}
+
 export function renderScanDetailPage() {
   const root = document.getElementById("view-scan-detail");
+  const preservedScroll = capturePreservedScroll(root);
   if (state.selectedJobLoading) {
     setHtml(
       root,
@@ -61,12 +96,23 @@ export function renderScanDetailPage() {
           <div class="skeleton-block" style="width:380px;height:12px"></div>
         </div>
         <div class="grid cols-4">
-          ${new Array(4).fill(0).map(() => `<div class="card is-loading"><div class="skeleton-block" style="width:80px;height:10px"></div><div class="skeleton-block" style="width:64px;height:24px;margin-top:10px"></div></div>`).join("")}
+          ${new Array(4)
+            .fill(0)
+            .map(
+              () =>
+                `<div class="card is-loading"><div class="skeleton-block" style="width:80px;height:10px"></div><div class="skeleton-block" style="width:64px;height:24px;margin-top:10px"></div></div>`
+            )
+            .join("")}
         </div>
         <div class="card is-loading">
           <div class="skeleton-block" style="width:180px;height:14px;margin-bottom:10px"></div>
           <div class="table-wrap"><table><tbody>
-            ${new Array(6).fill(0).map(() => `<tr class="skeleton-table"><td><span class="skeleton-block" style="width:100%"></span></td></tr>`).join("")}
+            ${new Array(6)
+              .fill(0)
+              .map(
+                () => `<tr class="skeleton-table"><td><span class="skeleton-block" style="width:100%"></span></td></tr>`
+              )
+              .join("")}
           </tbody></table></div>
         </div>
       </div>`
@@ -121,7 +167,18 @@ export function renderScanDetailPage() {
     const status = String(f.status || "").toLowerCase();
     if (fixStatusFilter && status !== fixStatusFilter) return false;
     if (!fixSearch) return true;
-    const hay = [f.id, f.finding_type, f.status, f.pr_title, f.pr_url, f.pr_body, f.ai_provider, f.ai_model, f.ai_endpoint]
+    const hay = [
+      f.id,
+      f.finding_type,
+      f.status,
+      f.pr_title,
+      f.pr_url,
+      f.pr_body,
+      f.apply_hints_json,
+      f.ai_provider,
+      f.ai_model,
+      f.ai_endpoint,
+    ]
       .map((v) => String(v || ""))
       .join(" ")
       .toLowerCase();
@@ -154,6 +211,7 @@ export function renderScanDetailPage() {
   const remediationForScanRunning = !!activeRemediationWorker;
   const commitHistory = state.selectedJobCommitHistory || [];
   const fixActionBusyKey = String(state.fixActionBusyKey || "");
+  const detailSyncing = !!state.selectedJobSyncing;
   setHtml(
     root,
     `
@@ -163,11 +221,12 @@ export function renderScanDetailPage() {
           <div>
             <h3 style="margin-bottom:6px">Scan #${selectedJob.id} · ${escapeHtml(selectedJob.owner)}/${escapeHtml(selectedJob.repo)}</h3>
             <div class="muted">Branch ${escapeHtml(selectedJob.branch)} • Commit ${escapeHtml(selectedJob.commit_sha || "")} • ${escapeHtml(fmtDate(selectedJob.started_at))}</div>
+            ${detailSyncing ? `<div class="muted" style="margin-top:6px;display:flex;align-items:center;gap:8px"><span class="spinner-dot spinner-dot-accent" aria-hidden="true"></span>Syncing latest scan data…</div>` : ""}
             <div style="margin-top:8px"><span class="badge ${statusClass(selectedJob.status)}">${escapeHtml(selectedJob.status)}</span></div>
           </div>
           <div class="row-actions">
             <button id="detailBackToScans" class="btn btn-secondary">Back To Scans</button>
-            <button id="detailRefresh" class="btn btn-secondary">Refresh Detail</button>
+            <button id="detailRefresh" class="btn btn-secondary ${detailSyncing ? "is-loading" : ""}" ${detailSyncing ? "disabled" : ""}>${detailSyncing ? "Syncing" : "Refresh Detail"}</button>
           </div>
         </div>
       </div>
@@ -189,7 +248,9 @@ export function renderScanDetailPage() {
               ${
                 commitHistory
                   .map(
-                    (h) => `<tr ${Number(h.id) === Number(selectedJob.id) ? `style="background:rgba(79,140,255,.08)"` : ""}>
+                    (
+                      h
+                    ) => `<tr ${Number(h.id) === Number(selectedJob.id) ? `style="background:rgba(79,140,255,.08)"` : ""}>
                   <td>#${Number(h.id || 0)}</td>
                   <td class="muted">${escapeHtml(String(h.commit_sha || "").slice(0, 12) || "-")}</td>
                   <td><span class="${statusClass(h.status)}">${escapeHtml(h.status || "")}</span></td>
@@ -200,7 +261,8 @@ export function renderScanDetailPage() {
                   <td>${Number(h.id) === Number(selectedJob.id) ? `<span class="muted">Current</span>` : `<button class="btn btn-secondary" data-history-job-open="${Number(h.id || 0)}">Open</button>`}</td>
                 </tr>`
                   )
-                  .join("") || `<tr><td colspan="8" class="muted">No commit history available yet for this branch.</td></tr>`
+                  .join("") ||
+                `<tr><td colspan="8" class="muted">No commit history available yet for this branch.</td></tr>`
               }
             </tbody>
           </table>
@@ -262,7 +324,7 @@ export function renderScanDetailPage() {
           <button id="detailFindingsPrev" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
           <button id="detailFindingsNext" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
         </div>
-        <div class="table-wrap findings-table-wrap">
+        <div class="table-wrap findings-table-wrap" data-preserve-scroll-key="scan-detail:findings-table">
           <table>
             <thead><tr><th>Kind</th><th>Scanner</th><th>Severity</th><th>Title</th><th>Path</th><th>Line</th><th>Detail</th></tr></thead>
             <tbody>
@@ -310,13 +372,15 @@ export function renderScanDetailPage() {
                 <div class="muted">Worker: ${escapeHtml(activeRemediationWorker.name || "remediation")} • ${escapeHtml(activeRemediationWorker.action || "triaging findings")}</div>
                 ${
                   activeRemediationWorker?.progress_phase || activeRemediationWorker?.progress_total
-                    ? `<div class="muted">Progress: ${escapeHtml(formatProgress({
-                        ai_progress_phase: activeRemediationWorker.progress_phase,
-                        ai_progress_current: activeRemediationWorker.progress_current,
-                        ai_progress_total: activeRemediationWorker.progress_total,
-                        ai_progress_percent: activeRemediationWorker.progress_percent,
-                        ai_progress_note: activeRemediationWorker.progress_note,
-                      }))}</div>`
+                    ? `<div class="muted">Progress: ${escapeHtml(
+                        formatProgress({
+                          ai_progress_phase: activeRemediationWorker.progress_phase,
+                          ai_progress_current: activeRemediationWorker.progress_current,
+                          ai_progress_total: activeRemediationWorker.progress_total,
+                          ai_progress_percent: activeRemediationWorker.progress_percent,
+                          ai_progress_note: activeRemediationWorker.progress_note,
+                        })
+                      )}</div>`
                     : ""
                 }
               </div>
@@ -334,7 +398,7 @@ export function renderScanDetailPage() {
                 <button id="detailRemHistoryToggle" class="btn btn-secondary">${remediationHistoryCollapsed ? "Expand" : "Collapse"}</button>
               </div>
             </div>
-            <div class="table-wrap remediation-history-wrap ${remediationHistoryCollapsed ? "hidden" : ""}">
+            <div class="table-wrap remediation-history-wrap ${remediationHistoryCollapsed ? "hidden" : ""}" data-preserve-scroll-key="scan-detail:remediation-history">
               <table>
                 <thead><tr><th>Campaign</th><th>Task</th><th>Status</th><th>AI Outcome</th><th>Started</th><th>Completed</th><th>Message</th><th>Details</th></tr></thead>
                 <tbody>
@@ -367,7 +431,7 @@ export function renderScanDetailPage() {
                       <div class="remediation-outcome-detail">
                         <div class="muted"><strong>AI updated:</strong> ${escapeHtml(fmtDate(r.ai_updated_at || ""))}</div>
                         <div class="muted" style="margin-top:6px"><strong>Triage summary</strong></div>
-                        <pre class="code remediation-summary-pre">${escapeHtml(r.ai_triage_summary || "No triage summary saved.")}</pre>
+                        <pre class="code remediation-summary-pre" data-preserve-scroll-key="scan-detail:triage-summary:${Number(r.task_id || 0)}">${escapeHtml(r.ai_triage_summary || "No triage summary saved.")}</pre>
                       </div>
                     </td>
                   </tr>`
@@ -396,7 +460,7 @@ export function renderScanDetailPage() {
               <button id="detailFixesPrev" class="btn btn-secondary" ${fixPage <= 1 ? "disabled" : ""}>Prev</button>
               <button id="detailFixesNext" class="btn btn-secondary" ${fixPage >= fixTotalPages ? "disabled" : ""}>Next</button>
             </div>
-            <div class="table-wrap">
+            <div class="table-wrap" data-preserve-scroll-key="scan-detail:fixes-table">
             <table>
               <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>AI Model</th><th>PR Title</th><th>PR</th><th>Actions</th></tr></thead>
               <tbody>
@@ -408,7 +472,18 @@ export function renderScanDetailPage() {
                   <td>${escapeHtml(f.finding_type)}</td>
                   <td><span class="${statusClass(f.status)}">${escapeHtml(f.status)}</span></td>
                   <td class="muted">${escapeHtml(formatAIOrigin(f))}</td>
-                  <td>${escapeHtml(f.pr_title || "")}</td>
+                  <td>
+                    <div>${escapeHtml(f.pr_title || "")}</div>
+                    ${
+                      String(f.apply_hints_json || "").trim()
+                        ? `<div class="muted" style="margin-top:4px">Hints: ${escapeHtml(summarizeApplyHints(f.apply_hints_json))}</div>
+                           <details style="margin-top:6px">
+                             <summary class="muted" style="cursor:pointer">View apply hints</summary>
+                             <pre class="code" data-preserve-scroll-key="scan-detail:fix-apply-hints:${Number(f.id || 0)}" style="margin-top:6px; white-space:pre-wrap; max-height:180px; overflow:auto">${escapeHtml(f.apply_hints_json)}</pre>
+                           </details>`
+                        : `<div class="muted" style="margin-top:4px">Hints: none</div>`
+                    }
+                  </td>
                   <td>${f.pr_url ? `<a class="link" target="_blank" rel="noreferrer" href="${escapeHtml(f.pr_url)}">Open PR</a>` : `<span class="muted">n/a</span>`}</td>
                   <td class="row-actions">
                     ${
@@ -436,6 +511,7 @@ export function renderScanDetailPage() {
     </div>
   `
   );
+  restorePreservedScroll(root, preservedScroll);
   root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
     if (state.selectedJobId)

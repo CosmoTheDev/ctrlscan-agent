@@ -112,8 +112,8 @@ export function renderScans() {
                       )
                       .join("")
                   : visibleRows
-                  .map(
-                    (j) => `
+                      .map(
+                        (j) => `
                 <tr data-job-id="${j.id}" style="cursor:pointer; ${state.selectedJobId === j.id ? "background:rgba(79,140,255,.08)" : ""}">
                   <td><input type="checkbox" data-job-select="${j.id}" ${selectedIds[j.id] ? "checked" : ""}></td>
                   <td>#${j.id}</td>
@@ -124,8 +124,8 @@ export function renderScans() {
                   <td class="row-actions"><button class="btn btn-danger ${scansActionBusy === `delete:${j.id}` ? "is-loading" : ""}" data-job-delete="${j.id}" ${scansActionBusy !== "" ? "disabled" : ""}>Delete</button></td>
                 </tr>
               `
-                  )
-                  .join("") || `<tr><td colspan="7" class="muted">No jobs yet</td></tr>`
+                      )
+                      .join("") || `<tr><td colspan="7" class="muted">No jobs yet</td></tr>`
               }
             </tbody>
           </table>
@@ -145,14 +145,15 @@ export function renderScans() {
                 ${new Array(4)
                   .fill(0)
                   .map(
-                    () => `<tr class="skeleton-table"><td><span class="skeleton-block" style="width:100%"></span></td></tr>`
+                    () =>
+                      `<tr class="skeleton-table"><td><span class="skeleton-block" style="width:100%"></span></td></tr>`
                   )
                   .join("")}
               </tbody></table>
             </div>
           </div>`
             : selectedJob
-            ? `
+              ? `
           <div class="stack">
             <div><strong>${escapeHtml(selectedJob.owner)}/${escapeHtml(selectedJob.repo)}</strong> <span class="badge ${statusClass(selectedJob.status)}">${escapeHtml(selectedJob.status)}</span></div>
             <div class="muted">Branch ${escapeHtml(selectedJob.branch)} • Started ${escapeHtml(fmtDate(selectedJob.started_at))}</div>
@@ -205,7 +206,7 @@ export function renderScans() {
             </div>
           </div>
         `
-            : `<div class="muted">Select a scan job to inspect details.</div>`
+              : `<div class="muted">Select a scan job to inspect details.</div>`
         }
       </div>
       </div>

@@ -1,5 +1,13 @@
 // Circular imports — all usages are inside function bodies.
-import { browseCronRepos, createCron, deleteCron, editCron, refreshCron, resetCronForm, triggerCron } from "../actions.js";
+import {
+  browseCronRepos,
+  createCron,
+  deleteCron,
+  editCron,
+  refreshCron,
+  resetCronForm,
+  triggerCron,
+} from "../actions.js";
 import { state, targetMeta } from "../state.js";
 import { escapeHtml, fmtDate, setHtml } from "../utils.js";
 
@@ -212,11 +220,15 @@ function refreshCronExpressionBuilderUI(root) {
   const preset = root.querySelector("#cronExprPreset")?.value || "daily";
   root.querySelector("#cronExprCustomHint")?.classList.toggle("hidden", preset !== "custom");
   root.querySelector("#cronExprTZWrap")?.classList.toggle("hidden", preset === "custom");
-  root.querySelector("#cronExprTimeWrap")?.classList.toggle("hidden", !(preset === "daily" || preset === "weekly" || preset === "monthly"));
+  root
+    .querySelector("#cronExprTimeWrap")
+    ?.classList.toggle("hidden", !(preset === "daily" || preset === "weekly" || preset === "monthly"));
   root.querySelector("#cronExprMinuteWrap")?.classList.toggle("hidden", preset !== "hourly");
   root.querySelector("#cronExprWeekdayWrap")?.classList.toggle("hidden", preset !== "weekly");
   root.querySelector("#cronExprMonthdayWrap")?.classList.toggle("hidden", preset !== "monthly");
-  root.querySelector("#cronExprIntervalWrap")?.classList.toggle("hidden", !(preset === "hourly" || preset === "daily" || preset === "monthly"));
+  root
+    .querySelector("#cronExprIntervalWrap")
+    ?.classList.toggle("hidden", !(preset === "hourly" || preset === "daily" || preset === "monthly"));
   if (preset === "weekly") {
     root.querySelector("#cronExprIntervalHelp")?.classList.add("hidden");
   } else {
@@ -242,7 +254,10 @@ function refreshCronExpressionBuilderUI(root) {
         setHtml(
           previewEl,
           `<div class="muted">Next 5 runs (${escapeHtml(tzLabel)}):</div>${preview.runs
-            .map((d) => `<div style="font-size:12px; padding-top:3px">${escapeHtml(formatDateForTimezone(d, preview.tz))}</div>`)
+            .map(
+              (d) =>
+                `<div style="font-size:12px; padding-top:3px">${escapeHtml(formatDateForTimezone(d, preview.tz))}</div>`
+            )
             .join("")}`
         );
       }
@@ -286,7 +301,9 @@ function updateCronSelectionPanel(root) {
   const repos = parseLines(root.querySelector("#cronRepos")?.value || "");
   const owners = parseLines(root.querySelector("#cronOwners")?.value || "");
   const prefixes = parseLines(root.querySelector("#cronOwnerPrefixes")?.value || "");
-  const targets = [...root.querySelectorAll("input[type='checkbox'][data-cron-target]:checked")].map((el) => el.dataset.cronTarget);
+  const targets = [...root.querySelectorAll("input[type='checkbox'][data-cron-target]:checked")].map(
+    (el) => el.dataset.cronTarget
+  );
   setHtml(
     panel,
     `

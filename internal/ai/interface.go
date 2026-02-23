@@ -32,38 +32,55 @@ type AIProvider interface {
 
 // TriageResult is the AI's prioritised view of all findings.
 type TriageResult struct {
-	Summary    string              `json:"summary"`
-	Prioritised []TriagedFinding   `json:"prioritised"`
+	Summary     string           `json:"summary"`
+	Prioritised []TriagedFinding `json:"prioritised"`
 }
 
 // TriagedFinding pairs a finding with the AI's risk assessment.
 type TriagedFinding struct {
-	FindingID   string              `json:"finding_id"`
-	Priority    int                 `json:"priority"`    // 1 = highest
-	Rationale   string              `json:"rationale"`
-	SuggestedFix string            `json:"suggested_fix"`
-	Finding     models.FindingSummary `json:"finding"`
+	FindingID    string                `json:"finding_id"`
+	Priority     int                   `json:"priority"` // 1 = highest
+	Rationale    string                `json:"rationale"`
+	SuggestedFix string                `json:"suggested_fix"`
+	Finding      models.FindingSummary `json:"finding"`
 }
 
 // FixRequest contains all the context needed to generate a fix.
 type FixRequest struct {
-	Finding     models.FindingSummary `json:"finding"`
+	Finding models.FindingSummary `json:"finding"`
 	// CodeContext is the relevant source code snippet with surrounding lines.
-	CodeContext string               `json:"code_context"`
+	CodeContext string `json:"code_context"`
 	// FilePath is the path relative to the repo root.
-	FilePath    string               `json:"file_path"`
+	FilePath string `json:"file_path"`
 	// Language is the programming language (e.g. "Go", "Python").
-	Language    string               `json:"language"`
+	Language string `json:"language"`
+}
+
+// ApplyHints gives the PR agent structured guidance for applying and validating
+// a model-generated patch while keeping git/network actions deterministic.
+type ApplyHints struct {
+	TargetFiles        []string `json:"target_files,omitempty"`
+	ApplyStrategy      string   `json:"apply_strategy,omitempty"` // git_apply|edit_file_directly|dependency_bump
+	DependencyName     string   `json:"dependency_name,omitempty"`
+	TargetVersion      string   `json:"target_version,omitempty"`
+	Ecosystem          string   `json:"ecosystem,omitempty"`     // go|npm|unknown
+	ManifestPath       string   `json:"manifest_path,omitempty"` // repo-relative path
+	LockfilePath       string   `json:"lockfile_path,omitempty"` // repo-relative path
+	Prerequisites      []string `json:"prerequisites,omitempty"`
+	PostApplyChecks    []string `json:"post_apply_checks,omitempty"`
+	FallbackPatchNotes string   `json:"fallback_patch_notes,omitempty"`
+	RiskNotes          string   `json:"risk_notes,omitempty"`
 }
 
 // FixResult contains the AI-generated patch and explanation.
 type FixResult struct {
-	Finding   models.FindingSummary `json:"finding"`
-	Patch     string               `json:"patch"`      // unified diff
-	Explanation string             `json:"explanation"`
-	Confidence  float64            `json:"confidence"` // 0.0 – 1.0
-	Language    string             `json:"language"`
-	FilePath    string             `json:"file_path"`
+	Finding     models.FindingSummary `json:"finding"`
+	Patch       string                `json:"patch"` // unified diff
+	Explanation string                `json:"explanation"`
+	Confidence  float64               `json:"confidence"` // 0.0 – 1.0
+	ApplyHints  *ApplyHints           `json:"apply_hints,omitempty"`
+	Language    string                `json:"language"`
+	FilePath    string                `json:"file_path"`
 }
 
 // PRDescription is the AI-drafted pull request title and body.

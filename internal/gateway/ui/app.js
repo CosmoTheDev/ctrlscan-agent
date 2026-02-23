@@ -1356,7 +1356,9 @@ async function bootstrap() {
   wireConfirmModal();
   wirePromptModal();
   wireTriggerModal();
-  setView("overview", { replaceHistory: true });
+  // Initialize view without rewriting the current URL; route parsing below
+  // will choose the correct view and preserve deep links on browser refresh.
+  setView("overview");
   connectEvents();
   await refreshAll();
   await applyRouteFromLocation();

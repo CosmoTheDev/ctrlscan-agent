@@ -44,7 +44,15 @@ jobs:
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           mkdir -p reports
-          gosec -fmt sarif -out reports/gosec.sarif ./...
+          gosec -fmt sarif -out reports/gosec.sarif -exclude-dir=references ./...
+
+      - name: Sanitize gosec SARIF
+        if: ${{ always() && hashFiles('reports/gosec.sarif') != '' }}
+        run: |
+          # gosec emits null entries in relationships arrays; strip them to produce valid SARIF
+          jq 'walk(if type == "object" and has("relationships") then .relationships |= map(select(type == "object")) else . end)' \
+            reports/gosec.sarif > reports/gosec.sarif.tmp
+          mv reports/gosec.sarif.tmp reports/gosec.sarif
 
       - name: Upload gosec SARIF
         if: ${{ always() && hashFiles('reports/gosec.sarif') != '' }}

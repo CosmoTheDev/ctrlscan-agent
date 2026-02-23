@@ -202,6 +202,9 @@ jobs:
             "high": 0,
             "medium": 0,
             "low": 0,
+            "policy_critical": 0,
+            "policy_high": 0,
+            "ignored_high_findings": 0,
             "scanner_counts": {"grype": 0, "opengrep": 0, "trufflehog": 0, "trivy": 0},
             "total_scanner_findings": 0,
             "conclusion": "success",
@@ -244,13 +247,34 @@ jobs:
                 summary["scanner_counts"][r["scanner_name"]] = int(r["n"] or 0)
               summary["total_scanner_findings"] = sum(summary["scanner_counts"].values())
 
+              # Policy-specific severity counts can exclude known scanner false positives
+              # while preserving raw rollups in the comment and artifacts.
+              summary["policy_critical"] = summary["critical"]
+              summary["policy_high"] = summary["high"]
+
+              cur.execute("""
+                SELECT vulnerability_id, package_name, severity
+                FROM sca_vulns
+                WHERE scan_job_id = ?
+              """, (row["id"],))
+              for vuln in cur.fetchall():
+                vuln_id = (vuln["vulnerability_id"] or "").strip()
+                pkg = (vuln["package_name"] or "").strip()
+                sev = (vuln["severity"] or "").strip().lower()
+                # grype currently normalizes GitHub Action versions like v4.1.3 to v4
+                # for some action refs and may report a false-positive high here.
+                if vuln_id == "GHSA-cxww-7g56-2vh6" and pkg == "actions/download-artifact" and sev == "high":
+                  summary["ignored_high_findings"] += 1
+                  if summary["policy_high"] > 0:
+                    summary["policy_high"] -= 1
+
             con.close()
 
             if scan_exit != 0:
               summary["conclusion"] = "failure"
             elif summary["scanner_counts"].get("trufflehog", 0) > 0:
               summary["conclusion"] = "failure"
-            elif summary["critical"] > 0 or summary["high"] > 0:
+            elif summary["policy_critical"] > 0 or summary["policy_high"] > 0:
               summary["conclusion"] = "failure"
             elif summary["medium"] > 0 or summary["scanner_counts"].get("trivy", 0) > 0:
               summary["conclusion"] = "neutral"
@@ -274,6 +298,9 @@ jobs:
               ("high", str(summary["high"])),
               ("medium", str(summary["medium"])),
               ("low", str(summary["low"])),
+              ("policy_critical", str(summary["policy_critical"])),
+              ("policy_high", str(summary["policy_high"])),
+              ("ignored_high_findings", str(summary["ignored_high_findings"])),
               ("grype_count", str(summary["scanner_counts"].get("grype", 0))),
               ("opengrep_count", str(summary["scanner_counts"].get("opengrep", 0))),
               ("trufflehog_count", str(summary["scanner_counts"].get("trufflehog", 0))),
@@ -455,6 +482,10 @@ jobs:
             echo "|---:|---:|---:|---:|"
             echo "| ${{ steps.parse.outputs.critical }} | ${{ steps.parse.outputs.high }} | ${{ steps.parse.outputs.medium }} | ${{ steps.parse.outputs.low }} |"
             echo ""
+            if [ "${{ steps.parse.outputs.ignored_high_findings }}" != "0" ]; then
+              echo "- Policy exclusions applied: ignored \`${{ steps.parse.outputs.ignored_high_findings }}\` known false-positive high finding(s) for \`actions/download-artifact\` GHSA version normalization."
+              echo ""
+            fi
             echo "Policy result: \`${{ steps.parse.outputs.conclusion }}\` (fail on secrets or critical/high)"
             if [ -f "reports/findings-top.md" ]; then
               echo ""
@@ -519,6 +550,7 @@ jobs:
                 `Branch: \`${{ steps.parse.outputs.branch || steps.target.outputs.scan_branch }}\`  `,
                 `Scan Job: \`#${{ steps.parse.outputs.job_id }}\` (\`${{ steps.parse.outputs.job_status }}\`)  `,
                 `Policy: \`${{ steps.parse.outputs.conclusion }}\` (fail on secrets or critical/high)`,
+                `${{ steps.parse.outputs.ignored_high_findings != '0' && format('Policy exclusions: ignored {0} known false-positive high finding(s) for actions/download-artifact.', steps.parse.outputs.ignored_high_findings) || '' }}`,
                 '',
                 '### Scanner Counts',
                 '',

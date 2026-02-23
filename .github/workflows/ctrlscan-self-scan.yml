@@ -414,6 +414,171 @@ jobs:
               },
           )
 
+          details_source = "sqlite"
+
+          def to_text(b):
+              if b is None:
+                  return ""
+              if isinstance(b, (bytes, bytearray)):
+                  return b.decode("utf-8", errors="replace")
+              return str(b)
+
+          def append_finding(kind, severity, rule, location, title, status="open"):
+              findings.append({
+                  "kind": kind or "",
+                  "severity": severity or "",
+                  "rule": rule or "",
+                  "location": location or "",
+                  "title": (title or "")[:200],
+                  "status": status or "",
+              })
+
+          def parse_opengrep_raw(raw_text):
+              try:
+                  payload = json.loads(raw_text or "{}")
+              except Exception:
+                  return
+              for r in payload.get("results", []) or []:
+                  extra = r.get("extra") or {}
+                  start = r.get("start") or {}
+                  loc = r.get("path") or ""
+                  line = start.get("line")
+                  if loc and line:
+                      loc = f"{loc}:{line}"
+                  append_finding(
+                      "sast",
+                      extra.get("severity", ""),
+                      r.get("check_id", ""),
+                      loc,
+                      extra.get("message", ""),
+                      "open",
+                  )
+
+          def parse_trivy_raw(raw_text):
+              try:
+                  payload = json.loads(raw_text or "{}")
+              except Exception:
+                  return
+              for res in payload.get("Results", []) or []:
+                  target = res.get("Target") or ""
+                  for m in res.get("Misconfigurations", []) or []:
+                      line = (((m.get("IacMetadata") or {}).get("StartLine")) or 0)
+                      loc = f"{target}:{line}" if (target and line) else target
+                      title = m.get("Title") or m.get("Description") or ""
+                      append_finding(
+                          "iac",
+                          m.get("Severity", ""),
+                          m.get("ID", ""),
+                          loc,
+                          title,
+                          m.get("Status", "") or "open",
+                      )
+
+          def parse_grype_raw(raw_text):
+              try:
+                  payload = json.loads(raw_text or "{}")
+              except Exception:
+                  return
+              for m in payload.get("matches", []) or []:
+                  vuln = m.get("vulnerability") or {}
+                  art = m.get("artifact") or {}
+                  locations = art.get("locations") or []
+                  loc = ""
+                  if locations:
+                      first = locations[0] or {}
+                      loc = first.get("path") or first.get("realPath") or ""
+                  if not loc:
+                      name = art.get("name") or ""
+                      ver = art.get("version") or ""
+                      loc = f"{name}@{ver}" if (name and ver) else (name or "")
+                  fix_versions = vuln.get("fix", {}).get("versions") or []
+                  title = ""
+                  if fix_versions:
+                      title = f'fix {" ,".join(str(v) for v in fix_versions[:3])}'
+                  append_finding(
+                      "sca",
+                      vuln.get("severity", ""),
+                      vuln.get("id", ""),
+                      loc,
+                      title,
+                      "open",
+                  )
+
+          def _deep_find_file_and_line(obj):
+              file_path = ""
+              line_no = 0
+              if isinstance(obj, dict):
+                  # Common trufflehog shapes: SourceMetadata.file/line or nested Data.Filesystem.file/line
+                  for k, v in obj.items():
+                      lk = str(k).lower()
+                      if not file_path and lk in ("file", "filepath", "path") and isinstance(v, str):
+                          file_path = v
+                      if not line_no and lk in ("line", "linenumber") and isinstance(v, int):
+                          line_no = v
+                  for v in obj.values():
+                      if file_path and line_no:
+                          break
+                      f, l = _deep_find_file_and_line(v)
+                      file_path = file_path or f
+                      line_no = line_no or l
+              elif isinstance(obj, list):
+                  for item in obj:
+                      f, l = _deep_find_file_and_line(item)
+                      if f or l:
+                          return f, l
+              return file_path, line_no
+
+          def parse_trufflehog_raw(raw_text):
+              for line in (raw_text or "").splitlines():
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      obj = json.loads(line)
+                  except Exception:
+                      continue
+                  verified = bool(obj.get("Verified"))
+                  sev = "HIGH" if verified else "MEDIUM"
+                  detector_name = obj.get("DetectorName") or ""
+                  detector_type = obj.get("DetectorType") or ""
+                  rule = detector_name + (f"/{detector_type}" if detector_type else "")
+                  file_path, line_no = _deep_find_file_and_line(obj.get("SourceMetadata") or {})
+                  loc = f"{file_path}:{line_no}" if (file_path and line_no) else (file_path or "")
+                  append_finding(
+                      "secrets",
+                      sev,
+                      rule,
+                      loc,
+                      "Potential secret detected",
+                      "open",
+                  )
+
+          # Fallback: parse raw scanner outputs when normalized tables are not populated.
+          if not findings:
+              try:
+                  cur.execute(
+                      "SELECT scanner_name, content_type, raw_output FROM scan_job_raw_outputs WHERE scan_job_id = ?",
+                      (job_id,),
+                  )
+                  raw_rows = cur.fetchall()
+              except sqlite3.OperationalError:
+                  raw_rows = []
+              if raw_rows:
+                  details_source = "raw"
+              for rr in raw_rows:
+                  scanner = (rr["scanner_name"] or "").strip().lower()
+                  raw_text = to_text(rr["raw_output"])
+                  if not raw_text.strip():
+                      continue
+                  if scanner == "opengrep":
+                      parse_opengrep_raw(raw_text)
+                  elif scanner == "trivy":
+                      parse_trivy_raw(raw_text)
+                  elif scanner == "grype":
+                      parse_grype_raw(raw_text)
+                  elif scanner == "trufflehog":
+                      parse_trufflehog_raw(raw_text)
+
           findings.sort(key=lambda f: (-severity_rank.get(f["severity"], 0), f["kind"], f["location"], f["rule"]))
           top = findings[:20]
 
@@ -421,7 +586,7 @@ jobs:
               json.dump(top, f, indent=2)
 
           md_lines = [
-              "# Top Findings (from SQLite)",
+              f"# Top Findings ({'from SQLite' if details_source == 'sqlite' else 'from raw scanner outputs fallback'})",
               "",
               f"Scan Job: #{job_id}",
               "",
@@ -447,6 +612,7 @@ jobs:
 
           with open(out, "a", encoding="utf-8") as f:
               f.write(f"has_details={'true' if bool(top) else 'false'}\n")
+              f.write(f"details_source={details_source}\n")
               f.write(f"details_markdown_path={preview_path}\n")
           con.close()
           PY
@@ -508,6 +674,24 @@ jobs:
           path: |
             reports/
           retention-days: 14
+
+      - name: Append artifact links to summary
+        if: always()
+        shell: bash
+        run: |
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          artifact_id="${{ steps.upload_artifacts.outputs.artifact-id }}"
+          {
+            echo ""
+            echo "### Links"
+            echo ""
+            echo "- Workflow run: ${run_url}"
+            if [ -n "${artifact_id}" ]; then
+              echo "- Artifact: ${run_url}/artifacts/${artifact_id}"
+            else
+              echo "- Artifact: ctrlscan-self-scan-reports (see workflow run page)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on PR with self-scan summary
         if: ${{ always() && github.event_name == 'pull_request' }}

@@ -80,23 +80,26 @@ jobs:
       - name: Run octoscan
         continue-on-error: true
         run: |
-          mkdir -p reports
+          mkdir -p reports /tmp/octoscan-sarif
+          # Human-readable output
           for f in .github/workflows/*.yml .github/workflows/*.yaml; do
             [ -f "$f" ] || continue
             echo "--- Scanning: $f ---"
             octoscan scan "$f" || true
           done
-          # Produce SARIF for Code Scanning
-          sarif_files=()
+          # Collect per-file SARIF
           for f in .github/workflows/*.yml .github/workflows/*.yaml; do
             [ -f "$f" ] || continue
-            octoscan scan --format sarif "$f" 2>/dev/null && sarif_files+=("$f")
-          done | jq -s '
-            if length == 0 then empty
-            else .[0] as $base |
-              $base | .runs[0].results = [.[] | .runs[]?.results[]?]
-            end
-          ' > reports/octoscan.sarif || true
+            tmpf="/tmp/octoscan-sarif/$(basename "$f").sarif"
+            octoscan scan --format sarif "$f" > "$tmpf" 2>/dev/null || true
+            # Drop files that aren't valid JSON
+            jq empty "$tmpf" 2>/dev/null || rm -f "$tmpf"
+          done
+          # Merge valid SARIF files
+          valid=(/tmp/octoscan-sarif/*.sarif)
+          if [ -e "${valid[0]}" ]; then
+            jq -s '.[0] as $base | $base | .runs[0].results = [.[] | .runs[]?.results[]?]' "${valid[@]}" > reports/octoscan.sarif
+          fi
 
       - name: Upload octoscan SARIF
         if: ${{ always() && hashFiles('reports/octoscan.sarif') != '' }}

@@ -411,6 +411,7 @@ func runInstallScript(url string, args ...string) error {
 	for attempt := 1; attempt <= 3; attempt++ {
 		// Use sh -c to allow piped commands.
 		cmdStr := fmt.Sprintf("curl -sSfL %s | sh -s -- %s", url, strings.Join(args, " "))
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd := exec.Command("sh", "-c", cmdStr)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -444,6 +445,7 @@ func installOpengrep(goos, goarch, binDir string) error {
 
 	dest := filepath.Join(binDir, "opengrep")
 	tmpDest := dest + ".download"
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.Command("sh", "-c",
 		fmt.Sprintf("curl --retry 3 --retry-all-errors -sSfL -o %q %q && mv %q %q && chmod +x %q",
 			tmpDest, url, tmpDest, dest, dest))

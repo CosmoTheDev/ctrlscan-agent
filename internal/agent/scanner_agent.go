@@ -15,15 +15,16 @@ import (
 // ScannerAgent clones repositories and runs scanners against them.
 // It reads from the repo queue and writes to the fix queue.
 type ScannerAgent struct {
-	id       int
-	cfg      *config.Config
-	db       database.DB
-	scanners []scanner.Scanner
+	id            int
+	cfg           *config.Config
+	db            database.DB
+	scanners      []scanner.Scanner
+	onRepoSkipped func(payload map[string]any)
 }
 
 // NewScannerAgent creates a ScannerAgent worker.
-func NewScannerAgent(id int, cfg *config.Config, db database.DB, scanners []scanner.Scanner) *ScannerAgent {
-	return &ScannerAgent{id: id, cfg: cfg, db: db, scanners: scanners}
+func NewScannerAgent(id int, cfg *config.Config, db database.DB, scanners []scanner.Scanner, onRepoSkipped func(payload map[string]any)) *ScannerAgent {
+	return &ScannerAgent{id: id, cfg: cfg, db: db, scanners: scanners, onRepoSkipped: onRepoSkipped}
 }
 
 // Run processes repo jobs from in and emits fix jobs to out.
@@ -64,6 +65,14 @@ func (s *ScannerAgent) processRepo(ctx context.Context, cm *repository.CloneMana
 
 	if skip, reason := s.shouldSkipRepo(ctx, job); skip {
 		slog.Info("Skipping repo scan", "worker", s.id, "repo", repoFull, "reason", reason)
+		if s.onRepoSkipped != nil {
+			s.onRepoSkipped(map[string]any{
+				"worker":   s.id,
+				"provider": job.Provider.Name(),
+				"repo":     repoFull,
+				"reason":   reason,
+			})
+		}
 		return nil
 	}
 

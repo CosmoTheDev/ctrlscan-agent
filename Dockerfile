@@ -35,10 +35,15 @@ RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | 
 
 COPY --from=builder /build/ctrlscan /usr/local/bin/ctrlscan
 
-# Create ctrlscan home directory
-RUN mkdir -p /root/.ctrlscan/bin
+# Create non-root runtime user and ctrlscan home
+RUN useradd --create-home --shell /bin/bash ctrlscan && \
+    mkdir -p /home/ctrlscan/.ctrlscan/bin && \
+    chown -R ctrlscan:ctrlscan /home/ctrlscan
 
-VOLUME ["/root/.ctrlscan"]
+USER ctrlscan
+ENV HOME=/home/ctrlscan
+
+VOLUME ["/home/ctrlscan/.ctrlscan"]
 
 ENTRYPOINT ["ctrlscan"]
 CMD ["--help"]

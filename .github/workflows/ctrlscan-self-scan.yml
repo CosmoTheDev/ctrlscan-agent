@@ -58,7 +58,7 @@ jobs:
           cache: true
 
       - name: Download ctrlscan binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1.3
         with:
           name: ctrlscan-linux-amd64
 
@@ -131,21 +131,30 @@ jobs:
       - name: Determine scan target
         id: target
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_HEAD_CLONE_URL: ${{ github.event.pull_request.head.repo.clone_url }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ "$PR_HEAD_FULL_NAME" != "$REPOSITORY" ]; then
               echo "skip_scan=true" >> "$GITHUB_OUTPUT"
               echo "skip_reason=Fork PRs are skipped by self-scan because ctrlscan scan clones by repo URL and cannot safely use elevated tokens on untrusted fork code." >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "scan_repo_url=${{ github.event.pull_request.head.repo.clone_url }}" >> "$GITHUB_OUTPUT"
-            echo "scan_branch=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
-            echo "head_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+            echo "scan_repo_url=$PR_HEAD_CLONE_URL" >> "$GITHUB_OUTPUT"
+            echo "scan_branch=$PR_HEAD_REF" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
           else
-            echo "scan_repo_url=https://github.com/${{ github.repository }}" >> "$GITHUB_OUTPUT"
-            echo "scan_branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "head_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "scan_repo_url=https://github.com/$REPOSITORY" >> "$GITHUB_OUTPUT"
+            echo "scan_branch=$REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$SHA" >> "$GITHUB_OUTPUT"
           fi
           echo "skip_scan=false" >> "$GITHUB_OUTPUT"
 
@@ -281,6 +290,138 @@ jobs:
           SKIP_REASON: ${{ steps.target.outputs.skip_reason }}
           SCAN_EXIT: ${{ steps.scan.outputs.scan_exit }}
 
+      - name: Export finding details from SQLite
+        id: details
+        if: ${{ always() && steps.parse.outputs.skipped != 'true' && steps.parse.outputs.job_id != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sqlite3
+
+          db_path = os.environ["DB_PATH"]
+          report_dir = os.environ["REPORT_DIR"]
+          job_id = int(os.environ["JOB_ID"])
+          out = os.environ["GITHUB_OUTPUT"]
+
+          os.makedirs(report_dir, exist_ok=True)
+          con = sqlite3.connect(db_path)
+          con.row_factory = sqlite3.Row
+          cur = con.cursor()
+
+          severity_rank = {
+              "CRITICAL": 5, "Critical": 5, "critical": 5,
+              "HIGH": 4, "High": 4, "high": 4, "ERROR": 4, "Error": 4, "error": 4,
+              "MEDIUM": 3, "Medium": 3, "medium": 3, "WARNING": 3, "Warning": 3, "warning": 3,
+              "LOW": 2, "Low": 2, "low": 2,
+              "INFO": 1, "Info": 1, "info": 1,
+          }
+
+          findings = []
+
+          def add(table, kind, cols_sql, mapper):
+              q = f"SELECT {cols_sql} FROM {table} WHERE scan_job_id = ?"
+              try:
+                  cur.execute(q, (job_id,))
+                  for row in cur.fetchall():
+                      findings.append(mapper(row))
+              except sqlite3.OperationalError:
+                  return
+
+          add(
+              "sast_findings",
+              "sast",
+              "id, severity, check_id, file_path, line_start, message, status",
+              lambda r: {
+                  "kind": "sast",
+                  "severity": r["severity"] or "",
+                  "rule": r["check_id"] or "",
+                  "location": f'{r["file_path"]}:{r["line_start"]}' if (r["file_path"] or "") else "",
+                  "title": (r["message"] or "")[:200],
+                  "status": r["status"] or "",
+              },
+          )
+          add(
+              "sca_vulns",
+              "sca",
+              "id, severity, vulnerability_id, package_name, version_affected, version_remediation, status",
+              lambda r: {
+                  "kind": "sca",
+                  "severity": r["severity"] or "",
+                  "rule": r["vulnerability_id"] or "",
+                  "location": (r["package_name"] or "") + (f'@{r["version_affected"]}' if (r["version_affected"] or "") else ""),
+                  "title": ("fix " + (r["version_remediation"] or "")) if (r["version_remediation"] or "") else "",
+                  "status": r["status"] or "",
+              },
+          )
+          add(
+              "secrets_findings",
+              "secrets",
+              "id, severity, detector_name, detector_type, file_path, line_number, status",
+              lambda r: {
+                  "kind": "secrets",
+                  "severity": r["severity"] or "",
+                  "rule": (r["detector_name"] or "") + (f'/{r["detector_type"]}' if (r["detector_type"] or "") else ""),
+                  "location": f'{r["file_path"]}:{r["line_number"]}' if (r["file_path"] or "") else "",
+                  "title": "Potential secret detected",
+                  "status": r["status"] or "",
+              },
+          )
+          add(
+              "iac_findings",
+              "iac",
+              "id, severity, check_id, title, file_path, line_start, status",
+              lambda r: {
+                  "kind": "iac",
+                  "severity": r["severity"] or "",
+                  "rule": r["check_id"] or "",
+                  "location": f'{r["file_path"]}:{r["line_start"]}' if (r["file_path"] or "") else "",
+                  "title": (r["title"] or "")[:200],
+                  "status": r["status"] or "",
+              },
+          )
+
+          findings.sort(key=lambda f: (-severity_rank.get(f["severity"], 0), f["kind"], f["location"], f["rule"]))
+          top = findings[:20]
+
+          with open(os.path.join(report_dir, "findings-top.json"), "w", encoding="utf-8") as f:
+              json.dump(top, f, indent=2)
+
+          md_lines = [
+              "# Top Findings (from SQLite)",
+              "",
+              f"Scan Job: #{job_id}",
+              "",
+          ]
+          if not top:
+              md_lines.append("No normalized findings rows found for this scan job.")
+          else:
+              md_lines.extend([
+                  "| Kind | Severity | Rule/CVE | Location | Detail | Status |",
+                  "|---|---|---|---|---|---|",
+              ])
+              for item in top:
+                  def esc(s):
+                      return str(s or "").replace("|", "\\|").replace("\n", " ").strip()
+                  md_lines.append(
+                      f'| {esc(item["kind"])} | {esc(item["severity"])} | {esc(item["rule"])} | {esc(item["location"])} | {esc(item["title"])} | {esc(item["status"])} |'
+                  )
+
+          preview_md = "\n".join(md_lines) + "\n"
+          preview_path = os.path.join(report_dir, "findings-top.md")
+          with open(preview_path, "w", encoding="utf-8") as f:
+              f.write(preview_md)
+
+          with open(out, "a", encoding="utf-8") as f:
+              f.write(f"has_details={'true' if bool(top) else 'false'}\n")
+              f.write(f"details_markdown_path={preview_path}\n")
+          con.close()
+          PY
+        env:
+          DB_PATH: ${{ steps.paths.outputs.db_path }}
+          REPORT_DIR: ${{ steps.paths.outputs.report_dir }}
+          JOB_ID: ${{ steps.parse.outputs.job_id }}
+
       - name: Publish job summary
         if: always()
         shell: bash
@@ -315,6 +456,10 @@ jobs:
             echo "| ${{ steps.parse.outputs.critical }} | ${{ steps.parse.outputs.high }} | ${{ steps.parse.outputs.medium }} | ${{ steps.parse.outputs.low }} |"
             echo ""
             echo "Policy result: \`${{ steps.parse.outputs.conclusion }}\` (fail on secrets or critical/high)"
+            if [ -f "reports/findings-top.md" ]; then
+              echo ""
+              cat "reports/findings-top.md"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload scan artifacts
@@ -347,6 +492,25 @@ jobs:
                 `Reason: ${{ steps.parse.outputs.skip_reason }}`,
               ].join('\n');
             } else {
+              const fs = require('fs');
+              let findingsPreview = '';
+              try {
+                if (fs.existsSync('reports/findings-top.md')) {
+                  const raw = fs.readFileSync('reports/findings-top.md', 'utf8').trim();
+                  // Keep PR comments compact
+                  const lines = raw.split('\n').slice(0, 18);
+                  findingsPreview = [
+                    '',
+                    '### Top Findings Preview',
+                    '',
+                    ...lines,
+                    '',
+                    '_See `ctrlscan-self-scan-reports` artifact for the full exported findings preview._',
+                  ].join('\n');
+                }
+              } catch (e) {
+                findingsPreview = '';
+              }
               body = [
                 marker,
                 `## ${emoji} Ctrlscan Self Scan`,
@@ -373,6 +537,7 @@ jobs:
                 '| ${{ steps.parse.outputs.critical }} | ${{ steps.parse.outputs.high }} | ${{ steps.parse.outputs.medium }} | ${{ steps.parse.outputs.low }} |',
                 '',
                 'Artifacts: see `ctrlscan-self-scan-reports` on this workflow run.',
+                findingsPreview,
               ].join('\n');
             }
 

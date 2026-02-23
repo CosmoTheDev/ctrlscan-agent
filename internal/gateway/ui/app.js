@@ -28,9 +28,18 @@ const state = {
   },
   scanDetailFindingsPage: 1,
   scanDetailFindingsPageSize: 25,
+  scanDetailFindingsFilters: {
+    kind: "",
+    scanner: "",
+    severity: "",
+  },
   scansPage: 1,
   scansPageSize: 20,
   stopBusy: false,
+  sweepUi: {
+    skipEventCount: 0,
+    latestSummary: null,
+  },
 };
 
 const views = [
@@ -119,10 +128,19 @@ function normalizeSeverityLabel(v) {
   return String(v || "").trim().toUpperCase();
 }
 
+function severityBucket(v) {
+  const s = normalizeSeverityLabel(v);
+  if (s === "CRITICAL") return "CRITICAL";
+  if (s === "HIGH" || s === "ERROR") return "HIGH";
+  if (s === "MEDIUM" || s === "WARNING" || s === "WARN") return "MEDIUM";
+  if (s === "LOW" || s === "INFO") return "LOW";
+  return s;
+}
+
 function countFindingsBySeverity(findings) {
   const totals = { critical: 0, high: 0, medium: 0, low: 0 };
   for (const f of findings || []) {
-    const s = normalizeSeverityLabel(f.severity);
+    const s = severityBucket(f.severity);
     if (s === "CRITICAL") totals.critical++;
     else if (s === "HIGH") totals.high++;
     else if (s === "MEDIUM") totals.medium++;
@@ -219,6 +237,7 @@ function renderNav() {
 function pushEvent(evt) {
   state.events.unshift({ at: new Date().toISOString(), ...evt });
   if (state.events.length > 200) state.events.length = 200;
+  handleToastForEvent(evt);
   if (evt.type === "status.update" || evt.type === "connected") {
     state.status = evt.payload || state.status;
     renderOverview();
@@ -229,7 +248,138 @@ function pushEvent(evt) {
   if (["agent.triggered", "agent.stop_requested", "schedule.fired", "schedule.triggered", "fix.approved", "fix.rejected"].includes(evt.type)) {
     scheduleLiveRefresh();
   }
+  if (["sweep.started", "sweep.completed"].includes(evt.type)) {
+    renderOverview();
+    renderScans();
+  }
   renderEvents();
+}
+
+function showToast({ title, message = "", kind = "info", timeoutMs = 3500 } = {}) {
+  const stack = document.getElementById("toastStack");
+  if (!stack) return;
+  const el = document.createElement("div");
+  el.className = `toast toast-${kind}`;
+  el.innerHTML = `
+    <div class="toast-title">${escapeHtml(title || "Notice")}</div>
+    ${message ? `<div class="toast-body">${escapeHtml(message)}</div>` : ""}
+  `;
+  stack.prepend(el);
+  const remove = () => {
+    if (el.parentNode) el.parentNode.removeChild(el);
+  };
+  const t = setTimeout(remove, timeoutMs);
+  el.addEventListener("click", () => {
+    clearTimeout(t);
+    remove();
+  });
+}
+
+function handleToastForEvent(evt) {
+  const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+  switch (evt?.type) {
+    case "agent.triggered": {
+      state.sweepUi.skipEventCount = 0;
+      const selected = Number(payload.selected_repos || 0);
+      const workers = Number(payload.workers || 0);
+      let msg = selected > 0 ? `Trigger accepted for ${selected} selected repos.` : "Trigger accepted. Discovery and scans will start shortly.";
+      if (workers > 0) msg += ` Workers: ${workers}.`;
+      showToast({ title: "Sweep Triggered", message: msg, kind: "info", timeoutMs: 3000 });
+      break;
+    }
+    case "sweep.started": {
+      state.sweepUi.latestSummary = {
+        status: "running",
+        started_at: payload.started_at || new Date().toISOString(),
+        completed_at: "",
+        duration_seconds: 0,
+        workers: Number(payload.workers || 0),
+        selected_repos: Number(payload.selected_repos || 0),
+        scan_targets: Array.isArray(payload.scan_targets) ? payload.scan_targets : [],
+        skipped_repos: 0,
+        skipped_by_reason: {},
+      };
+      const workers = Number(payload.workers || 0);
+      const selected = Number(payload.selected_repos || 0);
+      let msg = workers > 0 ? `${workers} worker${workers === 1 ? "" : "s"} active.` : "Workers active.";
+      if (selected > 0) msg += ` Scanning ${selected} selected repos.`;
+      showToast({ title: "Sweep Started", message: msg, kind: "success", timeoutMs: 2800 });
+      break;
+    }
+    case "repo.skipped": {
+      state.sweepUi.skipEventCount = (state.sweepUi.skipEventCount || 0) + 1;
+      break; // avoid spamming a toast per repo; summary shown on sweep.completed
+    }
+    case "sweep.completed": {
+      state.sweepUi.latestSummary = {
+        ...(state.sweepUi.latestSummary || {}),
+        status: String(payload.status || "completed"),
+        started_at: payload.started_at || state.sweepUi.latestSummary?.started_at || "",
+        completed_at: payload.completed_at || new Date().toISOString(),
+        duration_seconds: Number(payload.duration_seconds || 0),
+        skipped_repos: Number(payload.skipped_repos || 0),
+        skipped_by_reason: payload.skipped_by_reason && typeof payload.skipped_by_reason === "object" ? payload.skipped_by_reason : {},
+      };
+      const status = String(payload.status || "completed");
+      const skipped = Number(payload.skipped_repos || 0);
+      const reasons = payload.skipped_by_reason && typeof payload.skipped_by_reason === "object" ? payload.skipped_by_reason : {};
+      const recentSkipped = Number(reasons["recently scanned within 24h"] || 0);
+      let title = "Sweep Completed";
+      let kind = "success";
+      if (status === "cancelled") {
+        title = "Sweep Cancelled";
+        kind = "warn";
+      } else if (status !== "completed") {
+        title = `Sweep ${status[0]?.toUpperCase() || ""}${status.slice(1)}`;
+        kind = "info";
+      }
+      let msg = skipped > 0 ? `${skipped} repo${skipped === 1 ? "" : "s"} skipped.` : "No repo skips reported.";
+      if (recentSkipped > 0) msg += ` ${recentSkipped} skipped because they were scanned within 24h.`;
+      const dur = Number(payload.duration_seconds || 0);
+      if (dur > 0) msg += ` Duration: ${dur.toFixed(1)}s.`;
+      showToast({ title, message: msg, kind, timeoutMs: 5500 });
+      break;
+    }
+    case "agent.stop_requested": {
+      showToast({ title: "Stopping Sweep", message: "Cancellation requested. Running scanners will stop shortly.", kind: "warn", timeoutMs: 3500 });
+      break;
+    }
+  }
+}
+
+function renderSweepSummaryCard() {
+  const s = state.sweepUi?.latestSummary;
+  if (!s) {
+    return `
+      <div class="card">
+        <h3>Latest Sweep Summary</h3>
+        <div class="muted">No sweep lifecycle events seen yet in this session. Trigger a scan to populate this panel.</div>
+      </div>
+    `;
+  }
+  const status = String(s.status || "unknown");
+  const reasons = s.skipped_by_reason && typeof s.skipped_by_reason === "object" ? s.skipped_by_reason : {};
+  const reasonParts = Object.entries(reasons)
+    .filter(([, n]) => Number(n) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 3)
+    .map(([k, n]) => `${n} ${k}`);
+  const workers = Number(s.workers || 0);
+  const selectedRepos = Number(s.selected_repos || 0);
+  const targets = Array.isArray(s.scan_targets) ? s.scan_targets : [];
+  return `
+    <div class="card">
+      <h3>Latest Sweep Summary</h3>
+      <div class="stack">
+        <div><span class="badge ${statusClass(status)}">${escapeHtml(status)}</span></div>
+        <div class="muted">Started ${escapeHtml(fmtDate(s.started_at))}${s.completed_at ? ` • Completed ${escapeHtml(fmtDate(s.completed_at))}` : ""}</div>
+        <div>Duration: <strong>${s.duration_seconds ? `${Number(s.duration_seconds).toFixed(1)}s` : "n/a"}</strong></div>
+        <div>Skipped repos: <strong>${Number(s.skipped_repos || 0)}</strong></div>
+        ${reasonParts.length ? `<div class="muted">Skip reasons: ${escapeHtml(reasonParts.join(" • "))}</div>` : ``}
+        <div class="muted">${workers > 0 ? `${workers} worker${workers === 1 ? "" : "s"}` : "Workers unknown"}${selectedRepos > 0 ? ` • ${selectedRepos} selected repos` : ""}${targets.length ? ` • targets: ${targets.join(", ")}` : ""}</div>
+      </div>
+    </div>
+  `;
 }
 
 function renderHealthPill() {
@@ -285,6 +435,9 @@ function renderOverview() {
         </div>` : `<div class="muted">No scan jobs yet.</div>`}
       </div>
     </div>
+    <div style="margin-top:14px">
+      ${renderSweepSummaryCard()}
+    </div>
   `;
   root.querySelector("#ovTrigger")?.addEventListener("click", openTriggerModal);
   root.querySelector("#ovStop")?.addEventListener("click", stopSweep);
@@ -321,7 +474,9 @@ function renderScans() {
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
   root.innerHTML = `
-    <div class="split">
+    <div class="stack">
+      ${renderSweepSummaryCard()}
+      <div class="split">
       <div class="card">
         <div class="toolbar">
           <button id="scansRefresh" class="btn btn-secondary">Refresh Jobs</button>
@@ -385,24 +540,22 @@ function renderScans() {
               </table>
             </div>
             <div class="kicker">Findings (structured from DB when available, otherwise parsed from raw scanner output)</div>
-            <div class="table-wrap" style="max-height:270px">
+            <div class="table-wrap compact-findings-wrap" style="max-height:270px">
               <table>
-                <thead><tr><th>Kind</th><th>Scanner</th><th>Severity</th><th>Title</th><th>Path/Package</th><th>Line</th><th>Detail</th></tr></thead>
+                <thead><tr><th>Kind</th><th>Scanner</th><th>Severity</th><th>Path/Package</th></tr></thead>
                 <tbody>
                 ${findings.map(f => `<tr>
                   <td>${escapeHtml(f.kind)}</td>
                   <td>${escapeHtml(f.scanner || "")}</td>
-                  <td>${escapeHtml(f.severity)}</td>
-                  <td>${escapeHtml(f.title)}</td>
+                  <td>${escapeHtml(severityBucket ? severityBucket(f.severity) : f.severity)}</td>
                   <td>${escapeHtml(f.file_path || f.package || "")}${f.version ? ` <span class="muted">@${escapeHtml(f.version)}</span>` : ""}</td>
-                  <td>${f.line || ""}</td>
-                  <td class="muted">${escapeHtml(f.fix ? `Fix: ${f.fix}` : (f.message || ""))}</td>
-                </tr>`).join("") || `<tr><td colspan="7" class="muted">No findings available for this job yet. For new scans, details are parsed from raw scanner output when normalized DB rows are absent.</td></tr>`}
+                </tr>`).join("") || `<tr><td colspan="4" class="muted">No findings available for this job yet. For new scans, details are parsed from raw scanner output when normalized DB rows are absent.</td></tr>`}
                 </tbody>
               </table>
             </div>
           </div>
         ` : `<div class="muted">Select a scan job to inspect details.</div>`}
+      </div>
       </div>
     </div>
   `;
@@ -461,6 +614,13 @@ function renderScanDetailPage() {
   const selectedJob = state.selectedJob;
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
+  const filters = state.scanDetailFindingsFilters || { kind: "", scanner: "", severity: "" };
+  const filteredFindings = findings.filter((f) => {
+    if (filters.kind && String(f.kind || "") !== filters.kind) return false;
+    if (filters.scanner && String(f.scanner || "") !== filters.scanner) return false;
+    if (filters.severity && severityBucket(f.severity) !== filters.severity) return false;
+    return true;
+  });
   const derivedSeverity = countFindingsBySeverity(findings);
   const hasFindings = findings.length > 0;
   const severityCards = {
@@ -470,11 +630,15 @@ function renderScanDetailPage() {
     low: hasFindings ? derivedSeverity.low : (selectedJob.findings_low ?? 0),
   };
   const pageSize = state.scanDetailFindingsPageSize || 25;
-  const totalPages = Math.max(1, Math.ceil(findings.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(filteredFindings.length / pageSize));
   const page = Math.min(Math.max(1, state.scanDetailFindingsPage || 1), totalPages);
   state.scanDetailFindingsPage = page;
   const start = (page - 1) * pageSize;
-  const visibleFindings = findings.slice(start, start + pageSize);
+  const visibleFindings = filteredFindings.slice(start, start + pageSize);
+  const kindOptions = [...new Set(findings.map(f => String(f.kind || "").trim()).filter(Boolean))].sort();
+  const scannerOptions = [...new Set(findings.map(f => String(f.scanner || "").trim()).filter(Boolean))].sort();
+  const severityOptions = [...new Set(findings.map(f => severityBucket(f.severity)).filter(Boolean))]
+    .sort((a, b) => ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(a) - ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(b));
   const fixes = state.selectedJobFixes || [];
   const aiEnabled = !!state.agent?.ai_enabled;
   const mode = state.agent?.mode || "triage";
@@ -524,7 +688,25 @@ function renderScanDetailPage() {
       <div class="card">
         <div class="toolbar">
           <h3 style="margin:0">Findings</h3>
-          <span class="muted">Showing ${findings.length === 0 ? 0 : (start + 1)}-${Math.min(start + pageSize, findings.length)} of ${findings.length}</span>
+          <label style="width:auto">
+            <select id="detailFindingsKindFilter">
+              <option value="">All kinds</option>
+              ${kindOptions.map(v => `<option value="${escapeHtml(v)}" ${filters.kind === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+            </select>
+          </label>
+          <label style="width:auto">
+            <select id="detailFindingsScannerFilter">
+              <option value="">All scanners</option>
+              ${scannerOptions.map(v => `<option value="${escapeHtml(v)}" ${filters.scanner === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+            </select>
+          </label>
+          <label style="width:auto">
+            <select id="detailFindingsSeverityFilter">
+              <option value="">All severities</option>
+              ${severityOptions.map(v => `<option value="${escapeHtml(v)}" ${filters.severity === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+            </select>
+          </label>
+          <span class="muted">Showing ${filteredFindings.length === 0 ? 0 : (start + 1)}-${Math.min(start + pageSize, filteredFindings.length)} of ${filteredFindings.length}${filteredFindings.length !== findings.length ? ` (filtered from ${findings.length})` : ` of ${findings.length}`}</span>
           <button id="detailFindingsPrev" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
           <button id="detailFindingsNext" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
         </div>
@@ -535,7 +717,7 @@ function renderScanDetailPage() {
               ${visibleFindings.map(f => `<tr>
                 <td>${escapeHtml(f.kind)}</td>
                 <td>${escapeHtml(f.scanner || "")}</td>
-                <td>${escapeHtml(f.severity)}</td>
+                <td>${escapeHtml(severityBucket(f.severity))}</td>
                 <td>${escapeHtml(f.title)}</td>
                 <td>${escapeHtml(f.file_path || f.package || "")}</td>
                 <td>${f.line || ""}</td>
@@ -580,6 +762,21 @@ function renderScanDetailPage() {
   root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
     if (state.selectedJobId) await selectJob(state.selectedJobId);
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsKindFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFindingsFilters.kind = e.target.value;
+    state.scanDetailFindingsPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsScannerFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFindingsFilters.scanner = e.target.value;
+    state.scanDetailFindingsPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsSeverityFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFindingsFilters.severity = e.target.value;
+    state.scanDetailFindingsPage = 1;
     renderScanDetailPage();
   });
   root.querySelector("#detailFindingsPrev")?.addEventListener("click", () => {
@@ -750,9 +947,11 @@ async function triggerSweepWithOptions({ scanTargets, workers, selectedRepos }) 
     if (workers && Number(workers) > 0) payload.workers = Number(workers);
     if (Array.isArray(selectedRepos) && selectedRepos.length > 0) payload.selected_repos = selectedRepos;
     await api("/api/agent/trigger", { method: "POST", body: JSON.stringify(payload) });
+    showToast({ title: "Trigger Submitted", message: "Requested a new scan sweep. Watch the Scans page for live updates.", kind: "info", timeoutMs: 2500 });
     closeTriggerModal();
     await refreshStatus();
     await refreshAgent();
+    await refreshJobs();
   } catch (err) {
     showNotice("Trigger Failed", err.message);
   }
@@ -847,6 +1046,7 @@ async function refreshJobs() {
 async function selectJob(id) {
   state.selectedJobId = id;
   state.scanDetailFindingsPage = 1;
+  state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "" };
   state.selectedJob = await api(`/api/jobs/${id}`);
   state.selectedJobScanners = await api(`/api/jobs/${id}/scanners`);
   state.selectedJobFindings = await api(`/api/jobs/${id}/findings?status=open`);
@@ -861,6 +1061,8 @@ function clearSelectedJob() {
   state.selectedJobScanners = [];
   state.selectedJobFindings = [];
   state.selectedJobFixes = [];
+  state.scanDetailFindingsPage = 1;
+  state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "" };
 }
 
 function reconcileSelectedJobs() {

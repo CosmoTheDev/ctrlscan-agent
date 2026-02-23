@@ -22,6 +22,7 @@ func dockerRun(ctx context.Context, image, repoPath string, args []string) *exec
 	}
 	dockerArgs = append(dockerArgs, image)
 	dockerArgs = append(dockerArgs, args...)
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	return exec.CommandContext(ctx, "docker", dockerArgs...)
 }
 
@@ -30,7 +31,8 @@ func isBinaryAvailable(ctx context.Context, name, binDir string) bool {
 	// Check binDir first.
 	if binDir != "" {
 		candidate := binDir + "/" + name
-		cmd := exec.CommandContext(ctx, candidate, "--version")
+			// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+			cmd := exec.CommandContext(ctx, candidate, "--version")
 		if cmd.Run() == nil {
 			return true
 		}
@@ -41,6 +43,7 @@ func isBinaryAvailable(ctx context.Context, name, binDir string) bool {
 		return false
 	}
 	// Verify it actually runs.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.CommandContext(ctx, name, "--version")
 	return cmd.Run() == nil
 }

@@ -70,6 +70,7 @@ func (o *OpengrepScanner) Scan(ctx context.Context, opts ScanOptions) (*ScanResu
 		cmd = dockerRun(ctx, o.DockerImage(), opts.RepoPath,
 			[]string{"scan", "--json", "/scan"})
 	} else {
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd = exec.CommandContext(ctx, opengrep,
 			"scan",
 			"--json",

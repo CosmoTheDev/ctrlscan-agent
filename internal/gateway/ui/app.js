@@ -26,6 +26,10 @@ const state = {
     data: null,
     error: "",
   },
+  scanDetailFindingsPage: 1,
+  scanDetailFindingsPageSize: 25,
+  scansPage: 1,
+  scansPageSize: 20,
   stopBusy: false,
 };
 
@@ -111,6 +115,22 @@ function fmtDate(v) {
   return d.toLocaleString();
 }
 
+function normalizeSeverityLabel(v) {
+  return String(v || "").trim().toUpperCase();
+}
+
+function countFindingsBySeverity(findings) {
+  const totals = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of findings || []) {
+    const s = normalizeSeverityLabel(f.severity);
+    if (s === "CRITICAL") totals.critical++;
+    else if (s === "HIGH") totals.high++;
+    else if (s === "MEDIUM") totals.medium++;
+    else if (s === "LOW") totals.low++;
+  }
+  return totals;
+}
+
 function statusClass(v) {
   const s = String(v || "").toLowerCase();
   if (s.includes("complete")) return "status-completed";
@@ -121,7 +141,59 @@ function statusClass(v) {
   return "";
 }
 
-function setView(id) {
+function viewToPath(id) {
+  switch (id) {
+    case "overview": return "/ui/overview";
+    case "scans": return "/ui/scans";
+    case "cron": return "/ui/cronjobs";
+    case "agents": return "/ui/agents";
+    case "config": return "/ui/config";
+    case "events": return "/ui/events";
+    case "scan-detail":
+      if (state.selectedJobId) return `/ui/scans/${state.selectedJobId}`;
+      return "/ui/scans";
+    default:
+      return "/ui";
+  }
+}
+
+async function applyRouteFromLocation() {
+  const path = window.location.pathname || "/ui";
+  const parts = path.replace(/^\/+|\/+$/g, "").split("/");
+  if (parts[0] !== "ui") {
+    setView("overview");
+    return;
+  }
+  const section = parts[1] || "overview";
+  if (section === "scans" && parts[2]) {
+    const id = Number(parts[2]);
+    if (Number.isFinite(id) && id > 0) {
+      try {
+        await openScanDetailPage(id, { pushHistory: false });
+        return;
+      } catch (_) {
+        // fall through to scans page if deep-link job no longer exists
+      }
+    }
+    setView("scans");
+    return;
+  }
+  if (section === "" || section === "ui" || section === "overview") {
+    setView("overview");
+    return;
+  }
+  const alias = {
+    cronjobs: "cron",
+    cron: "cron",
+    agents: "agents",
+    config: "config",
+    events: "events",
+    scans: "scans",
+  };
+  setView(alias[section] || "overview");
+}
+
+function setView(id, opts = {}) {
   state.view = id;
   for (const v of views) {
     document.getElementById(`view-${v.id}`).classList.toggle("active", v.id === id);
@@ -129,13 +201,19 @@ function setView(id) {
   const meta = views.find(v => v.id === id);
   document.getElementById("pageTitle").textContent = meta.title;
   document.getElementById("pageSubtitle").textContent = meta.subtitle;
+  const path = viewToPath(id);
+  if (opts.replaceHistory) {
+    history.replaceState({ view: id, jobId: state.selectedJobId || null }, "", path);
+  } else if (opts.pushHistory) {
+    history.pushState({ view: id, jobId: state.selectedJobId || null }, "", path);
+  }
   renderNav();
 }
 
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.innerHTML = views.filter(v => !v.hidden).map(v => `<button data-view="${v.id}" class="${state.view === v.id ? "active" : ""}">${escapeHtml(v.title)}</button>`).join("");
-  nav.querySelectorAll("button").forEach(btn => btn.addEventListener("click", () => setView(btn.dataset.view)));
+  nav.querySelectorAll("button").forEach(btn => btn.addEventListener("click", () => setView(btn.dataset.view, { pushHistory: true })));
 }
 
 function pushEvent(evt) {
@@ -229,9 +307,16 @@ function renderOverview() {
 function renderScans() {
   const root = document.getElementById("view-scans");
   const rows = state.jobs || [];
+  const pageSize = state.scansPageSize || 20;
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = Math.min(Math.max(1, state.scansPage || 1), totalPages);
+  state.scansPage = page;
+  const pageStart = (page - 1) * pageSize;
+  const visibleRows = rows.slice(pageStart, pageStart + pageSize);
   const selectedIds = state.selectedScanJobIds || {};
   const selectedCount = rows.filter(j => selectedIds[j.id]).length;
-  const allVisibleSelected = rows.length > 0 && selectedCount === rows.length;
+  const visibleSelectedCount = visibleRows.filter(j => selectedIds[j.id]).length;
+  const allVisibleSelected = visibleRows.length > 0 && visibleSelectedCount === visibleRows.length;
   const selectedJob = state.selectedJob;
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
@@ -242,18 +327,23 @@ function renderScans() {
           <button id="scansRefresh" class="btn btn-secondary">Refresh Jobs</button>
           <button id="scansDeleteSelected" class="btn btn-danger" ${selectedCount === 0 ? "disabled" : ""}>Delete Selected (${selectedCount})</button>
           <button id="scansDeleteAll" class="btn btn-danger" ${rows.length === 0 ? "disabled" : ""}>Delete All</button>
+          <span class="muted">Page ${page} of ${totalPages} • Showing ${rows.length === 0 ? 0 : (pageStart + 1)}-${Math.min(pageStart + pageSize, rows.length)} of ${rows.length}</span>
+          <button id="scansPrevPage" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
+          <button id="scansNextPage" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
+        </div>
+        <div class="toolbar">
           <span class="muted">Click a job to inspect details. Use checkboxes for bulk delete.</span>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th style="width:34px"><input type="checkbox" id="scanSelectAll" ${allVisibleSelected ? "checked" : ""} ${rows.length === 0 ? "disabled" : ""}></th>
+                <th style="width:34px"><input type="checkbox" id="scanSelectAll" ${allVisibleSelected ? "checked" : ""} ${visibleRows.length === 0 ? "disabled" : ""}></th>
                 <th>ID</th><th>Repo</th><th>Status</th><th>Started</th><th>C/H/M/L</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              ${rows.map(j => `
+              ${visibleRows.map(j => `
                 <tr data-job-id="${j.id}" style="cursor:pointer; ${state.selectedJobId === j.id ? "background:rgba(79,140,255,.08)" : ""}">
                   <td><input type="checkbox" data-job-select="${j.id}" ${selectedIds[j.id] ? "checked" : ""}></td>
                   <td>#${j.id}</td>
@@ -317,10 +407,18 @@ function renderScans() {
     </div>
   `;
   root.querySelector("#scansRefresh")?.addEventListener("click", refreshJobs);
+  root.querySelector("#scansPrevPage")?.addEventListener("click", () => {
+    state.scansPage = Math.max(1, (state.scansPage || 1) - 1);
+    renderScans();
+  });
+  root.querySelector("#scansNextPage")?.addEventListener("click", () => {
+    state.scansPage = (state.scansPage || 1) + 1;
+    renderScans();
+  });
   root.querySelector("#scansDeleteSelected")?.addEventListener("click", deleteSelectedScanJobs);
   root.querySelector("#scansDeleteAll")?.addEventListener("click", deleteAllScanJobs);
   root.querySelector("#scanSelectAll")?.addEventListener("change", (e) => {
-    for (const row of rows) {
+    for (const row of visibleRows) {
       if (e.target.checked) {
         state.selectedScanJobIds[row.id] = true;
       } else {
@@ -363,6 +461,20 @@ function renderScanDetailPage() {
   const selectedJob = state.selectedJob;
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
+  const derivedSeverity = countFindingsBySeverity(findings);
+  const hasFindings = findings.length > 0;
+  const severityCards = {
+    critical: hasFindings ? derivedSeverity.critical : (selectedJob.findings_critical ?? 0),
+    high: hasFindings ? derivedSeverity.high : (selectedJob.findings_high ?? 0),
+    medium: hasFindings ? derivedSeverity.medium : (selectedJob.findings_medium ?? 0),
+    low: hasFindings ? derivedSeverity.low : (selectedJob.findings_low ?? 0),
+  };
+  const pageSize = state.scanDetailFindingsPageSize || 25;
+  const totalPages = Math.max(1, Math.ceil(findings.length / pageSize));
+  const page = Math.min(Math.max(1, state.scanDetailFindingsPage || 1), totalPages);
+  state.scanDetailFindingsPage = page;
+  const start = (page - 1) * pageSize;
+  const visibleFindings = findings.slice(start, start + pageSize);
   const fixes = state.selectedJobFixes || [];
   const aiEnabled = !!state.agent?.ai_enabled;
   const mode = state.agent?.mode || "triage";
@@ -386,10 +498,10 @@ function renderScanDetailPage() {
         </div>
       </div>
       <div class="grid cols-4">
-        <div class="card"><div class="metric-label">Critical</div><div class="metric-value">${selectedJob.findings_critical ?? 0}</div></div>
-        <div class="card"><div class="metric-label">High</div><div class="metric-value">${selectedJob.findings_high ?? 0}</div></div>
-        <div class="card"><div class="metric-label">Medium</div><div class="metric-value">${selectedJob.findings_medium ?? 0}</div></div>
-        <div class="card"><div class="metric-label">Low</div><div class="metric-value">${selectedJob.findings_low ?? 0}</div></div>
+        <div class="card"><div class="metric-label">Critical</div><div class="metric-value">${severityCards.critical}</div></div>
+        <div class="card"><div class="metric-label">High</div><div class="metric-value">${severityCards.high}</div></div>
+        <div class="card"><div class="metric-label">Medium</div><div class="metric-value">${severityCards.medium}</div></div>
+        <div class="card"><div class="metric-label">Low</div><div class="metric-value">${severityCards.low}</div></div>
       </div>
       <div class="card">
         <h3>Scanners</h3>
@@ -410,12 +522,17 @@ function renderScanDetailPage() {
         </div>
       </div>
       <div class="card">
-        <h3>Findings</h3>
-        <div class="table-wrap">
+        <div class="toolbar">
+          <h3 style="margin:0">Findings</h3>
+          <span class="muted">Showing ${findings.length === 0 ? 0 : (start + 1)}-${Math.min(start + pageSize, findings.length)} of ${findings.length}</span>
+          <button id="detailFindingsPrev" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
+          <button id="detailFindingsNext" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
+        </div>
+        <div class="table-wrap findings-table-wrap">
           <table>
             <thead><tr><th>Kind</th><th>Scanner</th><th>Severity</th><th>Title</th><th>Path</th><th>Line</th><th>Detail</th></tr></thead>
             <tbody>
-              ${findings.map(f => `<tr>
+              ${visibleFindings.map(f => `<tr>
                 <td>${escapeHtml(f.kind)}</td>
                 <td>${escapeHtml(f.scanner || "")}</td>
                 <td>${escapeHtml(f.severity)}</td>
@@ -427,7 +544,7 @@ function renderScanDetailPage() {
             </tbody>
           </table>
         </div>
-        <div class="footer-note">Use raw downloads for exact scanner payloads. Paths are normalized to repo-relative paths when possible.</div>
+        <div class="footer-note">Use raw downloads for exact scanner payloads. Paths are normalized to repo-relative paths when possible. Severity cards above reflect loaded findings when available.</div>
       </div>
       <div class="card">
         <h3>AI Triage / Fix Review</h3>
@@ -463,6 +580,14 @@ function renderScanDetailPage() {
   root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
     if (state.selectedJobId) await selectJob(state.selectedJobId);
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsPrev")?.addEventListener("click", () => {
+    state.scanDetailFindingsPage = Math.max(1, (state.scanDetailFindingsPage || 1) - 1);
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsNext")?.addEventListener("click", () => {
+    state.scanDetailFindingsPage = (state.scanDetailFindingsPage || 1) + 1;
     renderScanDetailPage();
   });
   root.querySelectorAll("[data-fix-action]").forEach((btn) => {
@@ -709,6 +834,8 @@ async function refreshStatus() {
 async function refreshJobs() {
   state.jobs = await api("/api/jobs");
   state.jobSummary = await api("/api/jobs/summary");
+  const totalPages = Math.max(1, Math.ceil((state.jobs || []).length / (state.scansPageSize || 20)));
+  if ((state.scansPage || 1) > totalPages) state.scansPage = totalPages;
   reconcileSelectedJobs();
   if (state.selectedJobId && !state.jobs.some(j => j.id === state.selectedJobId)) {
     clearSelectedJob();
@@ -719,6 +846,7 @@ async function refreshJobs() {
 
 async function selectJob(id) {
   state.selectedJobId = id;
+  state.scanDetailFindingsPage = 1;
   state.selectedJob = await api(`/api/jobs/${id}`);
   state.selectedJobScanners = await api(`/api/jobs/${id}/scanners`);
   state.selectedJobFindings = await api(`/api/jobs/${id}/findings?status=open`);
@@ -799,9 +927,9 @@ async function deleteAllScanJobs() {
   }
 }
 
-async function openScanDetailPage(id) {
+async function openScanDetailPage(id, opts = {}) {
   await selectJob(id);
-  setView("scan-detail");
+  setView("scan-detail", { pushHistory: opts.pushHistory !== false });
   renderScanDetailPage();
 }
 
@@ -864,6 +992,9 @@ function wireGlobalButtons() {
   document.getElementById("triggerBtn").addEventListener("click", openTriggerModal);
   document.getElementById("stopBtn").addEventListener("click", stopSweep);
   syncStopButtons();
+  window.addEventListener("popstate", () => {
+    applyRouteFromLocation();
+  });
 }
 
 function scheduleLiveRefresh() {
@@ -1134,9 +1265,10 @@ async function bootstrap() {
   wireGlobalButtons();
   wireNoticeModal();
   wireTriggerModal();
-  setView("overview");
+  setView("overview", { replaceHistory: true });
   connectEvents();
   await refreshAll();
+  await applyRouteFromLocation();
   setInterval(() => {
     if (document.visibilityState === "hidden") return;
     scheduleLiveRefresh();

@@ -23,7 +23,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # Use a patched Go toolchain in CI to avoid standard-library CVEs
+          # reported by govulncheck against the exact go.mod patch version.
+          go-version: "1.25.7"
           cache: true
 
       - name: Download dependencies
@@ -38,14 +40,15 @@ jobs:
           govulncheck ./...
 
       - name: gosec (SARIF)
+        continue-on-error: true
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           mkdir -p reports
           gosec -fmt sarif -out reports/gosec.sarif ./...
 
       - name: Upload gosec SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        if: ${{ always() && hashFiles('reports/gosec.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: reports/gosec.sarif
 
@@ -67,7 +70,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
 

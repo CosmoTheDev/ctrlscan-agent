@@ -1,0 +1,411 @@
+name: Ctrlscan Self Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ctrlscan-self-scan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.7"
+
+jobs:
+  build:
+    name: Build ctrlscan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build
+        run: make build
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctrlscan-linux-amd64
+          path: ctrlscan
+          retention-days: 1
+
+  self-scan:
+    name: Ctrlscan Self Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download ctrlscan binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ctrlscan-linux-amd64
+
+      - name: Make binary executable
+        run: chmod +x ./ctrlscan
+
+      - name: Prepare CI paths
+        id: paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOME_DIR="${RUNNER_TEMP}/ctrlscan-home"
+          BIN_DIR="${HOME_DIR}/.ctrlscan/bin"
+          DB_PATH="${RUNNER_TEMP}/ctrlscan-self-scan.db"
+          CFG_PATH="${RUNNER_TEMP}/ctrlscan-ci-config.json"
+          REPORT_DIR="${GITHUB_WORKSPACE}/reports"
+          mkdir -p "${HOME_DIR}" "${BIN_DIR}" "${REPORT_DIR}"
+          echo "home_dir=${HOME_DIR}" >> "$GITHUB_OUTPUT"
+          echo "bin_dir=${BIN_DIR}" >> "$GITHUB_OUTPUT"
+          echo "db_path=${DB_PATH}" >> "$GITHUB_OUTPUT"
+          echo "cfg_path=${CFG_PATH}" >> "$GITHUB_OUTPUT"
+          echo "report_dir=${REPORT_DIR}" >> "$GITHUB_OUTPUT"
+          echo "${BIN_DIR}" >> "$GITHUB_PATH"
+
+      - name: Install scanner tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./install/tools.sh --bin-dir "${{ steps.paths.outputs.bin_dir }}"
+          echo "=== Tool Versions ==="
+          syft version || true
+          grype version || true
+          opengrep --version || true
+          trivy --version || true
+          trufflehog --version || true
+
+      - name: Create ctrlscan CI config
+        shell: bash
+        env:
+          GH_REPO_TOKEN: ${{ github.token }}
+          DB_PATH: ${{ steps.paths.outputs.db_path }}
+          BIN_DIR: ${{ steps.paths.outputs.bin_dir }}
+          CFG_PATH: ${{ steps.paths.outputs.cfg_path }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          cfg = {
+              "database": {"driver": "sqlite", "path": os.environ["DB_PATH"], "dsn": ""},
+              "ai": {"provider": "none", "openai_api_key": "", "model": "gpt-4o", "base_url": "", "ollama_url": "http://localhost:11434"},
+              "git": {
+                  "github": [{"token": os.environ.get("GH_REPO_TOKEN", ""), "host": "github.com"}],
+                  "gitlab": [],
+                  "azure": []
+              },
+              "agent": {
+                  "mode": "triage",
+                  "workers": 2,
+                  "scan_targets": ["own_repos"],
+                  "watchlist": [],
+                  "scanners": ["grype", "opengrep", "trufflehog", "trivy"]
+              },
+              "tools": {"bin_dir": os.environ["BIN_DIR"], "prefer_docker": False},
+              "gateway": {"port": 6080}
+          }
+          with open(os.environ["CFG_PATH"], "w", encoding="utf-8") as f:
+              json.dump(cfg, f, indent=2)
+          PY
+
+      - name: Determine scan target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+              echo "skip_scan=true" >> "$GITHUB_OUTPUT"
+              echo "skip_reason=Fork PRs are skipped by self-scan because ctrlscan scan clones by repo URL and cannot safely use elevated tokens on untrusted fork code." >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "scan_repo_url=${{ github.event.pull_request.head.repo.clone_url }}" >> "$GITHUB_OUTPUT"
+            echo "scan_branch=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+            echo "head_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "scan_repo_url=https://github.com/${{ github.repository }}" >> "$GITHUB_OUTPUT"
+            echo "scan_branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "head_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "skip_scan=false" >> "$GITHUB_OUTPUT"
+
+      - name: Run ctrlscan self scan
+        id: scan
+        if: steps.target.outputs.skip_scan != 'true'
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "${{ steps.paths.outputs.report_dir }}"
+          HOME="${{ steps.paths.outputs.home_dir }}" \
+          ./ctrlscan --config "${{ steps.paths.outputs.cfg_path }}" scan \
+            --repo "${{ steps.target.outputs.scan_repo_url }}" \
+            --branch "${{ steps.target.outputs.scan_branch }}" \
+            --scanners grype,opengrep,trufflehog,trivy \
+            --parallel \
+            2>&1 | tee "${{ steps.paths.outputs.report_dir }}/ctrlscan-scan.log"
+          scan_exit=${PIPESTATUS[0]}
+          echo "scan_exit=${scan_exit}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Parse scan results from SQLite
+        id: parse
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sqlite3, sys
+          out = os.environ["GITHUB_OUTPUT"]
+          report_dir = os.environ["REPORT_DIR"]
+          db_path = os.environ["DB_PATH"]
+          skip_scan = os.environ.get("SKIP_SCAN", "false") == "true"
+          scan_exit = int(os.environ.get("SCAN_EXIT", "0") or "0")
+
+          summary = {
+            "skipped": skip_scan,
+            "skip_reason": os.environ.get("SKIP_REASON", ""),
+            "scan_exit": scan_exit,
+            "job_id": None,
+            "job_status": "skipped" if skip_scan else "unknown",
+            "repo": "",
+            "branch": "",
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "scanner_counts": {"grype": 0, "opengrep": 0, "trufflehog": 0, "trivy": 0},
+            "total_scanner_findings": 0,
+            "conclusion": "success",
+          }
+
+          if skip_scan:
+            summary["conclusion"] = "success"
+          elif not os.path.exists(db_path):
+            summary["conclusion"] = "failure" if scan_exit != 0 else "neutral"
+            summary["job_status"] = "no_db"
+          else:
+            con = sqlite3.connect(db_path)
+            con.row_factory = sqlite3.Row
+            cur = con.cursor()
+            cur.execute("""
+              SELECT id, owner, repo, branch, status,
+                     findings_critical, findings_high, findings_medium, findings_low
+              FROM scan_jobs
+              ORDER BY id DESC
+              LIMIT 1
+            """)
+            row = cur.fetchone()
+            if row:
+              summary["job_id"] = row["id"]
+              summary["job_status"] = row["status"]
+              summary["repo"] = f'{row["owner"]}/{row["repo"]}'
+              summary["branch"] = row["branch"]
+              summary["critical"] = int(row["findings_critical"] or 0)
+              summary["high"] = int(row["findings_high"] or 0)
+              summary["medium"] = int(row["findings_medium"] or 0)
+              summary["low"] = int(row["findings_low"] or 0)
+
+              cur.execute("""
+                SELECT scanner_name, COALESCE(SUM(findings_count), 0) AS n
+                FROM scan_job_scanners
+                WHERE scan_job_id = ?
+                GROUP BY scanner_name
+              """, (row["id"],))
+              for r in cur.fetchall():
+                summary["scanner_counts"][r["scanner_name"]] = int(r["n"] or 0)
+              summary["total_scanner_findings"] = sum(summary["scanner_counts"].values())
+
+            con.close()
+
+            if scan_exit != 0:
+              summary["conclusion"] = "failure"
+            elif summary["scanner_counts"].get("trufflehog", 0) > 0:
+              summary["conclusion"] = "failure"
+            elif summary["critical"] > 0 or summary["high"] > 0:
+              summary["conclusion"] = "failure"
+            elif summary["medium"] > 0 or summary["scanner_counts"].get("trivy", 0) > 0:
+              summary["conclusion"] = "neutral"
+            else:
+              summary["conclusion"] = "success"
+
+          os.makedirs(report_dir, exist_ok=True)
+          with open(os.path.join(report_dir, "self-scan-summary.json"), "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+
+          with open(out, "a", encoding="utf-8") as f:
+            for key, value in [
+              ("skipped", str(summary["skipped"]).lower()),
+              ("skip_reason", summary["skip_reason"]),
+              ("scan_exit", str(summary["scan_exit"])),
+              ("job_id", "" if summary["job_id"] is None else str(summary["job_id"])),
+              ("job_status", summary["job_status"]),
+              ("repo", summary["repo"]),
+              ("branch", summary["branch"]),
+              ("critical", str(summary["critical"])),
+              ("high", str(summary["high"])),
+              ("medium", str(summary["medium"])),
+              ("low", str(summary["low"])),
+              ("grype_count", str(summary["scanner_counts"].get("grype", 0))),
+              ("opengrep_count", str(summary["scanner_counts"].get("opengrep", 0))),
+              ("trufflehog_count", str(summary["scanner_counts"].get("trufflehog", 0))),
+              ("trivy_count", str(summary["scanner_counts"].get("trivy", 0))),
+              ("total_findings", str(summary["total_scanner_findings"])),
+              ("conclusion", summary["conclusion"]),
+            ]:
+              f.write(f"{key}={value}\n")
+          PY
+        env:
+          DB_PATH: ${{ steps.paths.outputs.db_path }}
+          REPORT_DIR: ${{ steps.paths.outputs.report_dir }}
+          SKIP_SCAN: ${{ steps.target.outputs.skip_scan }}
+          SKIP_REASON: ${{ steps.target.outputs.skip_reason }}
+          SCAN_EXIT: ${{ steps.scan.outputs.scan_exit }}
+
+      - name: Publish job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Ctrlscan Self Scan"
+            echo ""
+            if [ "${{ steps.parse.outputs.skipped }}" = "true" ]; then
+              echo "- Status: skipped"
+              echo "- Reason: ${{ steps.parse.outputs.skip_reason }}"
+              exit 0
+            fi
+            echo "- Repo: \`${{ steps.parse.outputs.repo || steps.target.outputs.scan_repo_url }}\`"
+            echo "- Branch: \`${{ steps.parse.outputs.branch || steps.target.outputs.scan_branch }}\`"
+            echo "- Scan command exit: \`${{ steps.parse.outputs.scan_exit }}\`"
+            echo "- Scan job: \`#${{ steps.parse.outputs.job_id }}\` (\`${{ steps.parse.outputs.job_status }}\`)"
+            echo ""
+            echo "### Scanner Counts"
+            echo ""
+            echo "| Scanner | Findings |"
+            echo "|---|---:|"
+            echo "| grype | ${{ steps.parse.outputs.grype_count }} |"
+            echo "| opengrep | ${{ steps.parse.outputs.opengrep_count }} |"
+            echo "| trufflehog | ${{ steps.parse.outputs.trufflehog_count }} |"
+            echo "| trivy | ${{ steps.parse.outputs.trivy_count }} |"
+            echo "| **Total** | **${{ steps.parse.outputs.total_findings }}** |"
+            echo ""
+            echo "### Severity Rollup"
+            echo ""
+            echo "| Critical | High | Medium | Low |"
+            echo "|---:|---:|---:|---:|"
+            echo "| ${{ steps.parse.outputs.critical }} | ${{ steps.parse.outputs.high }} | ${{ steps.parse.outputs.medium }} | ${{ steps.parse.outputs.low }} |"
+            echo ""
+            echo "Policy result: \`${{ steps.parse.outputs.conclusion }}\` (fail on secrets or critical/high)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctrlscan-self-scan-reports
+          path: |
+            reports/
+          retention-days: 14
+
+      - name: Comment on PR with self-scan summary
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- ctrlscan-self-scan -->';
+            const skipped = '${{ steps.parse.outputs.skipped }}' === 'true';
+            const conclusion = '${{ steps.parse.outputs.conclusion }}' || 'unknown';
+            const emoji = conclusion === 'failure' ? '❌' : conclusion === 'neutral' ? '⚠️' : '✅';
+            let body;
+            if (skipped) {
+              body = [
+                marker,
+                `## ${emoji} Ctrlscan Self Scan`,
+                '',
+                'Status: skipped',
+                '',
+                `Reason: ${{ steps.parse.outputs.skip_reason }}`,
+              ].join('\n');
+            } else {
+              body = [
+                marker,
+                `## ${emoji} Ctrlscan Self Scan`,
+                '',
+                `Repo: \`${{ steps.parse.outputs.repo || steps.target.outputs.scan_repo_url }}\`  `,
+                `Branch: \`${{ steps.parse.outputs.branch || steps.target.outputs.scan_branch }}\`  `,
+                `Scan Job: \`#${{ steps.parse.outputs.job_id }}\` (\`${{ steps.parse.outputs.job_status }}\`)  `,
+                `Policy: \`${{ steps.parse.outputs.conclusion }}\` (fail on secrets or critical/high)`,
+                '',
+                '### Scanner Counts',
+                '',
+                '| Scanner | Findings |',
+                '|---|---:|',
+                '| grype | ${{ steps.parse.outputs.grype_count }} |',
+                '| opengrep | ${{ steps.parse.outputs.opengrep_count }} |',
+                '| trufflehog | ${{ steps.parse.outputs.trufflehog_count }} |',
+                '| trivy | ${{ steps.parse.outputs.trivy_count }} |',
+                '| **Total** | **${{ steps.parse.outputs.total_findings }}** |',
+                '',
+                '### Severity Rollup',
+                '',
+                '| Critical | High | Medium | Low |',
+                '|---:|---:|---:|---:|',
+                '| ${{ steps.parse.outputs.critical }} | ${{ steps.parse.outputs.high }} | ${{ steps.parse.outputs.medium }} | ${{ steps.parse.outputs.low }} |',
+                '',
+                'Artifacts: see `ctrlscan-self-scan-reports` on this workflow run.',
+              ].join('\n');
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c =>
+              c.user?.type === 'Bot' && typeof c.body === 'string' && c.body.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Enforce self-scan policy
+        if: ${{ always() && steps.parse.outputs.skipped != 'true' }}
+        shell: bash
+        run: |
+          if [ "${{ steps.parse.outputs.conclusion }}" = "failure" ]; then
+            echo "::error::Ctrlscan self-scan policy failed (secrets or critical/high findings detected, or scan command failed)."
+            exit 1
+          fi

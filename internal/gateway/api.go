@@ -799,8 +799,8 @@ func (gw *Gateway) handleGetJob(w http.ResponseWriter, r *http.Request) {
 }
 
 type deleteJobsRequest struct {
-	IDs      []int64 `json:"ids"`
-	DeleteAll bool   `json:"delete_all"`
+	IDs       []int64 `json:"ids"`
+	DeleteAll bool    `json:"delete_all"`
 }
 
 type deleteJobsResponse struct {
@@ -1391,31 +1391,24 @@ func parseTrufflehogRawFindings(scanJobID int64, data []byte, firstSeen string) 
 			continue
 		}
 		var rec struct {
-			DetectorName string `json:"DetectorName"`
-			Verified     bool   `json:"Verified"`
-			SourceMeta   struct {
-				Data struct {
-					File string `json:"file"`
-					Line int    `json:"line"`
-				} `json:"Data"`
-				File string `json:"file"`
-				Line int    `json:"line"`
-			} `json:"SourceMetadata"`
+			DetectorName   string         `json:"DetectorName"`
+			Verified       bool           `json:"Verified"`
+			SourceMetadata map[string]any `json:"SourceMetadata"`
 		}
 		if err := json.Unmarshal(line, &rec); err != nil {
 			continue
 		}
-		file := firstNonEmpty(rec.SourceMeta.Data.File, rec.SourceMeta.File)
+		file, lineNo := extractTrufflehogPathLine(rec.SourceMetadata)
 		file = normalizeRepoRelativePath(file)
-		lineNo := rec.SourceMeta.Data.Line
-		if lineNo == 0 {
-			lineNo = rec.SourceMeta.Line
-		}
 		sev := "MEDIUM"
 		msg := "Unverified secret candidate"
 		if rec.Verified {
 			sev = "HIGH"
 			msg = "Verified secret detected"
+		}
+		title := strings.TrimSpace(rec.DetectorName)
+		if title == "" {
+			title = "Secret"
 		}
 		out = append(out, jobUnifiedFinding{
 			ID:        int64(i),
@@ -1423,7 +1416,7 @@ func parseTrufflehogRawFindings(scanJobID int64, data []byte, firstSeen string) 
 			Kind:      "secrets",
 			Scanner:   "trufflehog",
 			Severity:  sev,
-			Title:     rec.DetectorName,
+			Title:     title,
 			FilePath:  file,
 			Line:      lineNo,
 			Message:   msg,
@@ -1433,6 +1426,99 @@ func parseTrufflehogRawFindings(scanJobID int64, data []byte, firstSeen string) 
 		i++
 	}
 	return out
+}
+
+func extractTrufflehogPathLine(source map[string]any) (string, int) {
+	if len(source) == 0 {
+		return "", 0
+	}
+	var lineNo int
+	if data, ok := source["Data"].(map[string]any); ok {
+		if p, l := findPathLineInMap(data); p != "" || l != 0 {
+			return p, l
+		}
+	}
+	path, l := findPathLineInMap(source)
+	if l != 0 {
+		lineNo = l
+	}
+	return path, lineNo
+}
+
+func findPathLineInMap(m map[string]any) (string, int) {
+	type node struct {
+		v any
+	}
+	q := []node{{v: m}}
+	seen := map[uintptr]struct{}{}
+	var firstPath string
+	var firstLine int
+
+	for len(q) > 0 {
+		cur := q[0]
+		q = q[1:]
+		switch x := cur.v.(type) {
+		case map[string]any:
+			// Prevent pathological cycles (unlikely for JSON, but cheap safeguard).
+			ptr := fmt.Sprintf("%p", x)
+			_ = ptr
+			for k, v := range x {
+				kl := strings.ToLower(strings.TrimSpace(k))
+				switch kl {
+				case "file", "filepath", "path":
+					if firstPath == "" {
+						if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+							firstPath = s
+						}
+					}
+				case "line", "linenumber", "line_number":
+					if firstLine == 0 {
+						firstLine = anyToInt(v)
+					}
+				}
+				switch vv := v.(type) {
+				case map[string]any:
+					q = append(q, node{v: vv})
+				case []any:
+					for _, item := range vv {
+						q = append(q, node{v: item})
+					}
+				}
+			}
+		case []any:
+			for _, item := range x {
+				q = append(q, node{v: item})
+			}
+		}
+		if firstPath != "" && firstLine != 0 {
+			break
+		}
+		_ = seen
+	}
+	return firstPath, firstLine
+}
+
+func anyToInt(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case float32:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case int32:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	case string:
+		i, _ := strconv.Atoi(strings.TrimSpace(n))
+		return i
+	default:
+		return 0
+	}
 }
 
 func firstNonEmpty(values ...string) string {

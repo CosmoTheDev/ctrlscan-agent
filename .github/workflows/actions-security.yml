@@ -112,7 +112,7 @@ jobs:
         run: |
           POUTINE_VERSION=$(curl -s https://api.github.com/repos/boostsecurityio/poutine/releases/latest | jq -r '.tag_name' | sed 's/^v//')
           curl -sSfL -o /tmp/poutine.tar.gz \
-            "https://github.com/boostsecurityio/poutine/releases/download/v${POUTINE_VERSION}/poutine_${POUTINE_VERSION}_linux_amd64.tar.gz"
+            "https://github.com/boostsecurityio/poutine/releases/download/v${POUTINE_VERSION}/poutine_Linux_x86_64.tar.gz"
           tar -xzf /tmp/poutine.tar.gz -C /tmp
           install -m 0755 /tmp/poutine /usr/local/bin/poutine
           poutine version

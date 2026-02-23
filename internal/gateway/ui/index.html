@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ctrlscan Gateway</title>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-dot"></div>
+        <div>
+          <div class="brand-title">CTRLSCAN</div>
+          <div class="brand-sub">Gateway Dashboard</div>
+        </div>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-footer">
+        <div id="healthPill" class="pill">Health: unknown</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">Overview</h1>
+          <p id="pageSubtitle">Gateway status, agent controls, and scan posture.</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="stopBtn" class="btn btn-danger">Stop Scan</button>
+          <button id="refreshBtn" class="btn btn-secondary">Refresh</button>
+          <button id="triggerBtn" class="btn btn-primary">Trigger Scan</button>
+        </div>
+      </header>
+
+      <section id="view-overview" class="view active"></section>
+      <section id="view-scans" class="view"></section>
+      <section id="view-scan-detail" class="view"></section>
+      <section id="view-cron" class="view"></section>
+      <section id="view-agents" class="view"></section>
+      <section id="view-config" class="view"></section>
+      <section id="view-events" class="view"></section>
+    </main>
+  </div>
+
+  <div id="triggerModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="triggerModalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="triggerModalTitle">Trigger Scan Sweep</h2>
+          <p>Choose which discovery targets to scan for this run and optionally override worker concurrency.</p>
+        </div>
+        <button id="triggerModalClose" class="btn btn-secondary">Close</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-split">
+          <div class="stack">
+            <div class="kicker">Scan Targets</div>
+            <div class="toolbar">
+              <button id="targetsSelectAll" class="btn btn-secondary">Select All</button>
+              <button id="targetsSelectNone" class="btn btn-secondary">Select None</button>
+              <span class="muted">These selections apply to this trigger only.</span>
+            </div>
+            <div id="targetChecklist" class="check-grid"></div>
+            <label>Workers (optional override)
+              <input id="triggerWorkers" type="number" min="1" max="64" placeholder="Leave blank to use configured value">
+            </label>
+          </div>
+          <div class="card modal-note">
+            <div class="kicker">Preview (What This Sweep Can See)</div>
+            <div id="triggerPreviewBody" class="muted">Select one or more targets to preview accessible repositories.</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="triggerModalCancel" class="btn btn-secondary">Cancel</button>
+        <button id="triggerModalSubmit" class="btn btn-primary">Start Sweep</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="noticeModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="noticeModalTitle">
+    <div class="modal-card modal-card-sm">
+      <div class="modal-header">
+        <div>
+          <h2 id="noticeModalTitle">Notice</h2>
+          <p id="noticeModalBody">Message</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="noticeModalOk" class="btn btn-primary">OK</button>
+      </div>
+    </div>
+  </div>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

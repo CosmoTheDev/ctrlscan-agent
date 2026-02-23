@@ -1,0 +1,92 @@
+package ai
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
+	"github.com/CosmoTheDev/ctrlscan-agent/models"
+)
+
+// AIProvider abstracts calls to a language model.
+// To add a new provider:
+//  1. Create a file in internal/ai/ (e.g. mymodel.go)
+//  2. Implement AIProvider
+//  3. Register in New()
+type AIProvider interface {
+	// Name returns the provider identifier (e.g. "openai", "ollama").
+	Name() string
+
+	// IsAvailable verifies the provider is reachable and configured.
+	IsAvailable(ctx context.Context) bool
+
+	// TriageFindings ranks and summarises a list of findings.
+	TriageFindings(ctx context.Context, findings []models.FindingSummary) (*TriageResult, error)
+
+	// GenerateFix produces a code patch for a single finding.
+	GenerateFix(ctx context.Context, req FixRequest) (*FixResult, error)
+
+	// GeneratePRDescription drafts a pull request title and body.
+	GeneratePRDescription(ctx context.Context, fixes []FixResult) (*PRDescription, error)
+}
+
+// TriageResult is the AI's prioritised view of all findings.
+type TriageResult struct {
+	Summary    string              `json:"summary"`
+	Prioritised []TriagedFinding   `json:"prioritised"`
+}
+
+// TriagedFinding pairs a finding with the AI's risk assessment.
+type TriagedFinding struct {
+	FindingID   string              `json:"finding_id"`
+	Priority    int                 `json:"priority"`    // 1 = highest
+	Rationale   string              `json:"rationale"`
+	SuggestedFix string            `json:"suggested_fix"`
+	Finding     models.FindingSummary `json:"finding"`
+}
+
+// FixRequest contains all the context needed to generate a fix.
+type FixRequest struct {
+	Finding     models.FindingSummary `json:"finding"`
+	// CodeContext is the relevant source code snippet with surrounding lines.
+	CodeContext string               `json:"code_context"`
+	// FilePath is the path relative to the repo root.
+	FilePath    string               `json:"file_path"`
+	// Language is the programming language (e.g. "Go", "Python").
+	Language    string               `json:"language"`
+}
+
+// FixResult contains the AI-generated patch and explanation.
+type FixResult struct {
+	Finding   models.FindingSummary `json:"finding"`
+	Patch     string               `json:"patch"`      // unified diff
+	Explanation string             `json:"explanation"`
+	Confidence  float64            `json:"confidence"` // 0.0 – 1.0
+	Language    string             `json:"language"`
+	FilePath    string             `json:"file_path"`
+}
+
+// PRDescription is the AI-drafted pull request title and body.
+type PRDescription struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// New returns the configured AIProvider.
+// If no provider or API key is set, it returns a NoopProvider — callers should
+// check IsAvailable() before using any AI features.
+func New(cfg config.AIConfig) (AIProvider, error) {
+	switch cfg.Provider {
+	case "", "none":
+		return &NoopProvider{}, nil
+	case "openai":
+		if cfg.OpenAIKey == "" {
+			return &NoopProvider{}, nil
+		}
+		return NewOpenAI(cfg)
+	case "ollama":
+		return NewOllama(cfg)
+	default:
+		return nil, fmt.Errorf("unsupported AI provider %q (supported: openai, ollama)", cfg.Provider)
+	}
+}

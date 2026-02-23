@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>ctrlscan</id>
+    <version>0.0.0</version>
+    <title>ctrlscan</title>
+    <authors>CosmoTheDev</authors>
+    <projectUrl>https://github.com/CosmoTheDev/ctrlscan-agent</projectUrl>
+    <packageSourceUrl>https://github.com/CosmoTheDev/ctrlscan-agent</packageSourceUrl>
+    <licenseUrl>https://github.com/CosmoTheDev/ctrlscan-agent/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/CosmoTheDev/ctrlscan-agent</projectSourceUrl>
+    <docsUrl>https://github.com/CosmoTheDev/ctrlscan-agent#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/CosmoTheDev/ctrlscan-agent/issues</bugTrackerUrl>
+    <summary>AI-powered CVE remediation agent</summary>
+    <description>ctrlscan scans repositories for vulnerabilities and helps generate remediation PRs.</description>
+    <tags>security cve scanner sast sca secrets ai devsecops</tags>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

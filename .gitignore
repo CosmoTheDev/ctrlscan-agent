@@ -30,3 +30,15 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+references/
+llm_docs/
+.codex/playwright-artifacts/
+.codex/playwright-profile/
+.codex/mcp-sqlite-runtime/
+logs/
+docs/
+.codex/
+scripts/
+
+config/mcporter.json
+.env

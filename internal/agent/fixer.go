@@ -49,6 +49,10 @@ const (
 	fixAttemptFailed   fixAttemptOutcome = "failed"
 )
 
+const (
+	maxFixAttemptsPerTaskDefault = 20
+)
+
 // NewFixerAgent creates a FixerAgent.
 func NewFixerAgent(cfg *config.Config, db database.DB, ai aiPkg.AIProvider) *FixerAgent {
 	return &FixerAgent{cfg: cfg, db: db, ai: ai}
@@ -83,7 +87,7 @@ func (f *FixerAgent) Run(ctx context.Context, in <-chan fixJob) {
 func (f *FixerAgent) processFixJob(ctx context.Context, job fixJob) error {
 	slog.Info("Fixer processing scan job", "scan_job_id", job.ScanJobID)
 	outcome := aiRemediationOutcome{}
-	defer f.persistRemediationTaskOutcome(ctx, job.RemediationTaskID, outcome)
+	defer func() { f.persistRemediationTaskOutcome(ctx, job.RemediationTaskID, outcome) }()
 
 	// If no AI is configured, scan results are already stored — nothing more to do.
 	if !f.ai.IsAvailable(ctx) {
@@ -99,6 +103,20 @@ func (f *FixerAgent) processFixJob(ctx context.Context, job fixJob) error {
 	if len(findings) == 0 {
 		slog.Info("No open findings for scan job", "scan_job_id", job.ScanJobID)
 		outcome.TriageStatus = "no_findings"
+		return nil
+	}
+	findings, droppedPrefilter := filterFindingsForAIFix(findings)
+	if droppedPrefilter > 0 {
+		slog.Info("Filtered non-actionable findings before AI triage",
+			"scan_job_id", job.ScanJobID,
+			"remaining", len(findings),
+			"dropped", droppedPrefilter,
+		)
+	}
+	outcome.FindingsLoaded = len(findings)
+	if len(findings) == 0 {
+		outcome.TriageStatus = "no_actionable_findings"
+		outcome.TriageSummary = "No actionable findings remained after default AI fix prefilters (e.g. vendored/generated/test fixture paths)."
 		return nil
 	}
 
@@ -136,6 +154,12 @@ func (f *FixerAgent) processFixJob(ctx context.Context, job fixJob) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			if outcome.FixAttempted >= maxFixAttemptsPerTaskDefault {
+				slog.Info("Stopping fallback fix generation at cap",
+					"scan_job_id", job.ScanJobID,
+					"attempt_cap", maxFixAttemptsPerTaskDefault)
+				break
+			}
 			switch f.generateAndQueueFix(ctx, fallback[i], job) {
 			case fixAttemptQueued:
 				outcome.FixAttempted++
@@ -163,6 +187,12 @@ func (f *FixerAgent) processFixJob(ctx context.Context, job fixJob) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if outcome.FixAttempted >= maxFixAttemptsPerTaskDefault {
+			slog.Info("Reached fix attempt cap for remediation task",
+				"scan_job_id", job.ScanJobID,
+				"attempt_cap", maxFixAttemptsPerTaskDefault)
+			break
+		}
 		switch f.generateAndQueueFix(ctx, tf.Finding, job) {
 		case fixAttemptQueued:
 			outcome.FixAttempted++
@@ -177,6 +207,71 @@ func (f *FixerAgent) processFixJob(ctx context.Context, job fixJob) error {
 	}
 
 	return nil
+}
+
+func filterFindingsForAIFix(findings []models.FindingSummary) ([]models.FindingSummary, int) {
+	if len(findings) == 0 {
+		return nil, 0
+	}
+	out := make([]models.FindingSummary, 0, len(findings))
+	dropped := 0
+	for _, f := range findings {
+		if !isLikelyPatchableFinding(f) {
+			dropped++
+			continue
+		}
+		if isDefaultAIIgnoredPath(f) {
+			dropped++
+			continue
+		}
+		out = append(out, f)
+	}
+	return out, dropped
+}
+
+func isLikelyPatchableFinding(f models.FindingSummary) bool {
+	kind := strings.ToLower(strings.TrimSpace(f.Type))
+	path := strings.TrimSpace(strings.ReplaceAll(f.FilePath, "\\", "/"))
+	switch kind {
+	case "sast", "iac":
+		return path != ""
+	case "secrets":
+		return path != ""
+	case "sca":
+		// SCA fixes without a manifest lockfile path are often not patchable by diff generation.
+		return path != "" || (strings.TrimSpace(f.Package) != "" && strings.TrimSpace(f.FixVersion) != "")
+	default:
+		return path != ""
+	}
+}
+
+func isDefaultAIIgnoredPath(f models.FindingSummary) bool {
+	p := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(f.FilePath, "\\", "/")))
+	if p == "" {
+		return false
+	}
+	common := []string{
+		"/node_modules/", "node_modules/",
+		"/vendor/", "vendor/",
+		"/.git/", ".git/",
+		"/dist/", "/build/", "/coverage/",
+	}
+	for _, sub := range common {
+		if strings.Contains(p, sub) {
+			return true
+		}
+	}
+	// Default skip secret findings in test fixtures/docs/examples; users can still
+	// inspect them in the UI and override via future policy controls.
+	if strings.EqualFold(strings.TrimSpace(f.Type), "secrets") {
+		secretNoisy := []string{"/test/", "/tests/", "/testdata/", "/fixtures/", "/fixture/", "/examples/", "readme", "_test."}
+		for _, sub := range secretNoisy {
+			if strings.Contains(p, strings.ToLower(sub)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (f *FixerAgent) triageFindingsChunked(ctx context.Context, findings []models.FindingSummary) (*aiPkg.TriageResult, int, error) {

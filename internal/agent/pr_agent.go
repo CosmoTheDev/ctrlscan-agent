@@ -46,16 +46,44 @@ func (a *PRAgent) ProcessApprovedFixes(ctx context.Context) {
 }
 
 func (a *PRAgent) drainApprovedFixes(ctx context.Context) {
-	var fixes []models.FixQueue
-	if err := a.db.Select(ctx, &fixes,
-		`SELECT * FROM fix_queue WHERE status = 'approved' LIMIT 20`); err != nil {
+	type fixRow struct {
+		ID         int64   `db:"id"`
+		ScanJobID  int64   `db:"scan_job_id"`
+		FindingType string `db:"finding_type"`
+		FindingID   int64  `db:"finding_id"`
+		Patch      string  `db:"patch"`
+		PRTitle    string  `db:"pr_title"`
+		PRBody     string  `db:"pr_body"`
+		Status     string  `db:"status"`
+		PRNumber   int     `db:"pr_number"`
+		PRURL      string  `db:"pr_url"`
+	}
+	var rows []fixRow
+	if err := a.db.Select(ctx, &rows,
+		`SELECT id, scan_job_id, finding_type, finding_id, patch, pr_title, pr_body, status, pr_number, pr_url
+		   FROM fix_queue
+		  WHERE status = 'approved'
+		  ORDER BY id ASC
+		  LIMIT 20`); err != nil {
 		slog.Warn("Failed to load approved fixes", "error", err)
 		return
 	}
 
-	for _, fix := range fixes {
+	for _, row := range rows {
 		if ctx.Err() != nil {
 			return
+		}
+		fix := models.FixQueue{
+			ID:          row.ID,
+			ScanJobID:   row.ScanJobID,
+			FindingType: row.FindingType,
+			FindingID:   row.FindingID,
+			Patch:       row.Patch,
+			PRTitle:     row.PRTitle,
+			PRBody:      row.PRBody,
+			Status:      row.Status,
+			PRNumber:    row.PRNumber,
+			PRURL:       row.PRURL,
 		}
 		if err := a.createPR(ctx, fix); err != nil {
 			slog.Error("PR creation failed", "fix_id", fix.ID, "error", err)

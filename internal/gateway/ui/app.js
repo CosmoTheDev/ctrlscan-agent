@@ -16,6 +16,12 @@ const state = {
   selectedJobFindingsSeverityTotals: null,
   selectedJobFixes: [],
   selectedJobRemediationRuns: [],
+  selectedJobRemediationRunsTotal: 0,
+  selectedJobRemediationRunsPage: 1,
+  selectedJobRemediationRunsPageSize: 10,
+  selectedJobRemediationRunsTotalPages: 1,
+  scanDetailRemediationHistoryCollapsed: false,
+  scanDetailRemediationExpandedTaskIds: {},
   pathIgnoreRules: [],
   pathIgnoreRulesLoading: false,
   remediationCampaigns: [],
@@ -76,6 +82,10 @@ const state = {
   scansPageSize: 20,
   stopBusy: false,
   scanDetailAiStopBusy: false,
+  scanDetailFixesPage: 1,
+  scanDetailFixesPageSize: 10,
+  scanDetailFixesSearch: "",
+  scanDetailFixesStatus: "",
   sweepUi: {
     skipEventCount: 0,
     latestSummary: null,
@@ -897,7 +907,36 @@ function renderScanDetailPage() {
   const scannerOptions = Array.isArray(facets.scanners) ? facets.scanners : [];
   const severityOptions = Array.isArray(facets.severities) ? facets.severities : [];
   const fixes = state.selectedJobFixes || [];
+  const fixSearch = String(state.scanDetailFixesSearch || "").trim().toLowerCase();
+  const fixStatusFilter = String(state.scanDetailFixesStatus || "").trim().toLowerCase();
+  const filteredFixes = fixes.filter((f) => {
+    const status = String(f.status || "").toLowerCase();
+    if (fixStatusFilter && status !== fixStatusFilter) return false;
+    if (!fixSearch) return true;
+    const hay = [
+      f.id,
+      f.finding_type,
+      f.status,
+      f.pr_title,
+      f.pr_url,
+      f.pr_body,
+    ].map(v => String(v || "")).join(" ").toLowerCase();
+    return hay.includes(fixSearch);
+  });
+  const fixPageSize = Math.max(1, Number(state.scanDetailFixesPageSize || 10));
+  const fixTotal = filteredFixes.length;
+  const fixTotalPages = Math.max(1, Math.ceil(fixTotal / fixPageSize));
+  const fixPage = Math.min(Math.max(1, Number(state.scanDetailFixesPage || 1)), fixTotalPages);
+  state.scanDetailFixesPage = fixPage;
+  const fixStart = (fixPage - 1) * fixPageSize;
+  const visibleFixes = filteredFixes.slice(fixStart, fixStart + fixPageSize);
+  const fixStatusOptions = [...new Set(fixes.map(f => String(f.status || "").trim()).filter(Boolean))].sort();
   const remediationRuns = state.selectedJobRemediationRuns || [];
+  const remediationRunsTotal = Number(state.selectedJobRemediationRunsTotal || remediationRuns.length || 0);
+  const remediationRunsPage = Number(state.selectedJobRemediationRunsPage || 1);
+  const remediationRunsTotalPages = Math.max(1, Number(state.selectedJobRemediationRunsTotalPages || 1));
+  const remediationHistoryCollapsed = !!state.scanDetailRemediationHistoryCollapsed;
+  const remediationExpanded = state.scanDetailRemediationExpandedTaskIds || {};
   const aiEnabled = !!state.agent?.ai_enabled;
   const mode = state.agent?.mode || "triage";
   const pathIgnoreRules = state.pathIgnoreRules || [];
@@ -1016,10 +1055,18 @@ function renderScanDetailPage() {
             </div>
           ` : ``}
           <div class="card" style="margin-top:10px; padding:10px 12px">
-            <div class="kicker">AI Remediation Campaign History (This Scan)</div>
-            <div class="table-wrap">
+            <div class="toolbar" style="justify-content:space-between">
+              <div class="kicker" style="margin:0">AI Remediation Campaign History (This Scan)</div>
+              <div class="row-actions">
+                <span class="muted">Page ${remediationRunsPage} of ${remediationRunsTotalPages} • ${remediationRunsTotal} total</span>
+                <button id="detailRemHistoryPrev" class="btn btn-secondary" ${remediationRunsPage <= 1 ? "disabled" : ""}>Prev</button>
+                <button id="detailRemHistoryNext" class="btn btn-secondary" ${remediationRunsPage >= remediationRunsTotalPages ? "disabled" : ""}>Next</button>
+                <button id="detailRemHistoryToggle" class="btn btn-secondary">${remediationHistoryCollapsed ? "Expand" : "Collapse"}</button>
+              </div>
+            </div>
+            <div class="table-wrap remediation-history-wrap ${remediationHistoryCollapsed ? "hidden" : ""}">
               <table>
-                <thead><tr><th>Campaign</th><th>Task</th><th>Status</th><th>Started</th><th>Completed</th><th>Message</th></tr></thead>
+                <thead><tr><th>Campaign</th><th>Task</th><th>Status</th><th>AI Outcome</th><th>Started</th><th>Completed</th><th>Message</th><th>Details</th></tr></thead>
                 <tbody>
                   ${remediationRuns.map(r => `<tr>
                     <td>#${r.campaign_id} <span class="muted">${escapeHtml(r.campaign_name || "")}</span></td>
@@ -1028,35 +1075,65 @@ function renderScanDetailPage() {
                       <div><span class="${statusClass(r.task_status)}">${escapeHtml(r.task_status || "")}</span></div>
                       <div class="muted">Campaign: ${escapeHtml(r.campaign_status || "")} (${escapeHtml(r.campaign_mode || "")})</div>
                     </td>
+                    <td>
+                      <div>${escapeHtml(r.ai_triage_status || "-")}</div>
+                      <div class="muted">findings ${Number(r.ai_findings_loaded || 0)} → ${Number(r.ai_findings_deduped || 0)} • batches ${Number(r.ai_triage_batches || 0)}</div>
+                      <div class="muted">queued ${Number(r.ai_fix_queued || 0)} / attempted ${Number(r.ai_fix_attempted || 0)} • low-conf ${Number(r.ai_fix_skipped_low_conf || 0)} • failed ${Number(r.ai_fix_failed || 0)}</div>
+                    </td>
                     <td>${escapeHtml(fmtDate(r.started_at || r.campaign_started_at || r.created_at))}</td>
                     <td>${escapeHtml(fmtDate(r.completed_at || r.campaign_completed_at || ""))}</td>
                     <td class="muted">${escapeHtml(r.task_message || r.campaign_error || "")}</td>
-                  </tr>`).join("") || `<tr><td colspan="6" class="muted">No AI remediation campaigns have run for this scan yet.</td></tr>`}
+                    <td><button class="btn btn-secondary" data-rem-task-toggle="${r.task_id}">${remediationExpanded[r.task_id] ? "Hide" : "Show"}</button></td>
+                  </tr>
+                  ${remediationExpanded[r.task_id] ? `<tr>
+                    <td colspan="8">
+                      <div class="remediation-outcome-detail">
+                        <div class="muted"><strong>AI updated:</strong> ${escapeHtml(fmtDate(r.ai_updated_at || ""))}</div>
+                        <div class="muted" style="margin-top:6px"><strong>Triage summary</strong></div>
+                        <pre class="code remediation-summary-pre">${escapeHtml(r.ai_triage_summary || "No triage summary saved.")}</pre>
+                      </div>
+                    </td>
+                  </tr>` : ""}`).join("") || `<tr><td colspan="8" class="muted">No AI remediation campaigns have run for this scan yet.</td></tr>`}
                 </tbody>
               </table>
             </div>
             <div class="footer-note">This history shows offline AI review campaign runs for this scan even when no fixes were queued (for example, if all fixes were skipped as low confidence).</div>
           </div>
-          <div class="table-wrap" style="margin-top:10px">
+          <div class="card" style="margin-top:10px; padding:10px 12px">
+            <div class="toolbar">
+              <input id="detailFixesSearch" placeholder="Search fixes / PR title / status..." value="${escapeHtml(state.scanDetailFixesSearch || "")}" style="min-width:260px">
+              <label style="width:auto">
+                <select id="detailFixesStatusFilter">
+                  <option value="">All statuses</option>
+                  ${fixStatusOptions.map(v => `<option value="${escapeHtml(v)}" ${String(state.scanDetailFixesStatus||"") === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+                </select>
+              </label>
+              <button id="detailFixesSearchClear" class="btn btn-secondary">Clear</button>
+              <span class="muted">Showing ${fixTotal === 0 ? 0 : (fixStart + 1)}-${Math.min(fixStart + fixPageSize, fixTotal)} of ${fixTotal}</span>
+              <button id="detailFixesPrev" class="btn btn-secondary" ${fixPage <= 1 ? "disabled" : ""}>Prev</button>
+              <button id="detailFixesNext" class="btn btn-secondary" ${fixPage >= fixTotalPages ? "disabled" : ""}>Next</button>
+            </div>
+            <div class="table-wrap">
             <table>
               <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>PR Title</th><th>PR</th><th>Actions</th></tr></thead>
               <tbody>
-                ${fixes.map(f => `<tr>
+                ${visibleFixes.map(f => `<tr>
                   <td>#${f.id}</td>
                   <td>${escapeHtml(f.finding_type)}</td>
                   <td><span class="${statusClass(f.status)}">${escapeHtml(f.status)}</span></td>
                   <td>${escapeHtml(f.pr_title || "")}</td>
                   <td>${f.pr_url ? `<a class="link" target="_blank" rel="noreferrer" href="${escapeHtml(f.pr_url)}">Open PR</a>` : `<span class="muted">n/a</span>`}</td>
                   <td class="row-actions">
-                    ${f.status === "pending" ? `
-                      <button class="btn btn-secondary" data-fix-action="approve" data-fix-id="${f.id}">Approve</button>
-                      <button class="btn btn-primary" data-fix-action="approve-run" data-fix-id="${f.id}">Approve + Create PR</button>
-                      <button class="btn btn-danger" data-fix-action="reject" data-fix-id="${f.id}">Reject</button>
+                    ${["pending", "approved", "pr_failed"].includes(String(f.status || "").toLowerCase()) ? `
+                      ${String(f.status || "").toLowerCase() === "pending" ? `<button class="btn btn-secondary" data-fix-action="approve" data-fix-id="${f.id}">Approve</button>` : ``}
+                      <button class="btn btn-primary" data-fix-action="approve-run" data-fix-id="${f.id}">${String(f.status || "").toLowerCase() === "pr_failed" ? "Retry Create PR" : (String(f.status || "").toLowerCase() === "approved" ? "Create PR" : "Approve + Create PR")}</button>
+                      ${String(f.status || "").toLowerCase() !== "pr_open" ? `<button class="btn btn-danger" data-fix-action="reject" data-fix-id="${f.id}">Reject</button>` : ``}
                     ` : `<span class="muted">-</span>`}
                   </td>
                 </tr>`).join("") || `<tr><td colspan="6" class="muted">No AI-generated fixes queued for this scan yet.</td></tr>`}
               </tbody>
             </table>
+          </div>
           </div>
         `}
       </div>
@@ -1064,7 +1141,7 @@ function renderScanDetailPage() {
   `);
   root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
-    if (state.selectedJobId) await selectJob(state.selectedJobId, { preserveFindingsState: true });
+    if (state.selectedJobId) await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
     renderScanDetailPage();
   });
   root.querySelector("#detailFindingsKindFilter")?.addEventListener("change", async (e) => {
@@ -1131,6 +1208,25 @@ function renderScanDetailPage() {
     await loadSelectedJobFindings();
     renderScanDetailPage();
   });
+  root.querySelector("#detailRemHistoryToggle")?.addEventListener("click", () => {
+    state.scanDetailRemediationHistoryCollapsed = !state.scanDetailRemediationHistoryCollapsed;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailRemHistoryPrev")?.addEventListener("click", async () => {
+    state.selectedJobRemediationRunsPage = Math.max(1, (state.selectedJobRemediationRunsPage || 1) - 1);
+    await loadSelectedJobRemediationRuns();
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailRemHistoryNext")?.addEventListener("click", async () => {
+    state.selectedJobRemediationRunsPage = Math.min(Math.max(1, Number(state.selectedJobRemediationRunsTotalPages || 1)), (state.selectedJobRemediationRunsPage || 1) + 1);
+    await loadSelectedJobRemediationRuns();
+    renderScanDetailPage();
+  });
+  root.querySelectorAll("[data-rem-task-toggle]").forEach((btn) => btn.addEventListener("click", () => {
+    const id = Number(btn.dataset.remTaskToggle);
+    state.scanDetailRemediationExpandedTaskIds[id] = !state.scanDetailRemediationExpandedTaskIds[id];
+    renderScanDetailPage();
+  }));
   root.querySelectorAll("[data-fix-action]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.fixId);
@@ -1460,10 +1556,24 @@ async function loadSelectedJobFindings() {
 async function loadSelectedJobRemediationRuns() {
   if (!state.selectedJobId) return;
   try {
-    const res = await api(`/api/jobs/${state.selectedJobId}/remediation`);
-    state.selectedJobRemediationRuns = Array.isArray(res) ? res : [];
+    const page = Number(state.selectedJobRemediationRunsPage || 1);
+    const pageSize = Number(state.selectedJobRemediationRunsPageSize || 10);
+    const res = await api(`/api/jobs/${state.selectedJobId}/remediation?page=${page}&page_size=${pageSize}`);
+    if (res && Array.isArray(res.items)) {
+      state.selectedJobRemediationRuns = res.items;
+      state.selectedJobRemediationRunsTotal = Number(res.total || 0);
+      state.selectedJobRemediationRunsPage = Number(res.page || page);
+      state.selectedJobRemediationRunsPageSize = Number(res.page_size || pageSize);
+      state.selectedJobRemediationRunsTotalPages = Number(res.total_pages || 1);
+    } else {
+      state.selectedJobRemediationRuns = Array.isArray(res) ? res : [];
+      state.selectedJobRemediationRunsTotal = state.selectedJobRemediationRuns.length;
+      state.selectedJobRemediationRunsTotalPages = 1;
+    }
   } catch (_) {
     state.selectedJobRemediationRuns = [];
+    state.selectedJobRemediationRunsTotal = 0;
+    state.selectedJobRemediationRunsTotalPages = 1;
   }
 }
 
@@ -1473,6 +1583,15 @@ async function selectJob(id, opts = {}) {
     state.scanDetailFindingsPage = 1;
     state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "", title: "", path: "", q: "" };
     state.scanDetailFindingsDraft = { title: "", path: "", q: "" };
+  }
+  if (!opts.preserveFixesState) {
+    state.scanDetailFixesPage = 1;
+    state.scanDetailFixesSearch = "";
+    state.scanDetailFixesStatus = "";
+  }
+  if (!opts.preserveRemediationState) {
+    state.selectedJobRemediationRunsPage = 1;
+    state.scanDetailRemediationExpandedTaskIds = {};
   }
   state.selectedJob = await api(`/api/jobs/${id}`);
   state.selectedJobScanners = await api(`/api/jobs/${id}/scanners`);
@@ -1493,7 +1612,14 @@ function clearSelectedJob() {
   state.selectedJobFindingsFacets = { kinds: [], scanners: [], severities: [] };
   state.selectedJobFindingsSeverityTotals = null;
   state.selectedJobFixes = [];
+  state.scanDetailFixesPage = 1;
+  state.scanDetailFixesSearch = "";
+  state.scanDetailFixesStatus = "";
   state.selectedJobRemediationRuns = [];
+  state.selectedJobRemediationRunsTotal = 0;
+  state.selectedJobRemediationRunsPage = 1;
+  state.selectedJobRemediationRunsTotalPages = 1;
+  state.scanDetailRemediationExpandedTaskIds = {};
   state.scanDetailFindingsPage = 1;
   state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "", title: "", path: "", q: "" };
   state.scanDetailFindingsDraft = { title: "", path: "", q: "" };
@@ -1621,7 +1747,7 @@ async function launchReviewCampaignForSelectedScan() {
     if (state.selectedJobId === job.id) {
       setTimeout(async () => {
         try {
-          await selectJob(job.id, { preserveFindingsState: true });
+          await selectJob(job.id, { preserveFindingsState: true, preserveRemediationState: true });
         } catch (_) {}
       }, 1500);
     }
@@ -1865,7 +1991,7 @@ async function refreshAll() {
   try {
     await Promise.all([refreshStatus(), refreshJobs(), refreshCron(), refreshAgent(), refreshAgentWorkers(), refreshRemediation()]);
     if (state.selectedJobId) {
-      await selectJob(state.selectedJobId, { preserveFindingsState: true });
+      await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
     }
     if (state.view === "config") {
       await refreshConfig();
@@ -1925,7 +2051,7 @@ function scheduleLiveRefresh(opts = {}) {
       if (pending.remediation || state.view === "remediation") tasks.push(refreshRemediation());
       if (tasks.length > 0) await Promise.all(tasks);
       if (pending.detail && state.selectedJobId) {
-        await selectJob(state.selectedJobId, { preserveFindingsState: true });
+        await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
       }
     } catch (_) {
       // best-effort live refresh; status stream continues even if this fails
@@ -1942,7 +2068,7 @@ async function handleFixAction(id, action) {
     if (!path) return;
     await api(path, { method: "POST", body: "{}" });
     if (state.selectedJobId) {
-      await selectJob(state.selectedJobId, { preserveFindingsState: true });
+      await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
     } else {
       await refreshJobs();
     }

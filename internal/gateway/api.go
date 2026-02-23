@@ -1635,6 +1635,7 @@ func (gw *Gateway) handleListJobRemediationRuns(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	pg := parsePaginationParams(r, 10, 100)
 	type row struct {
 		TaskID              int64   `db:"task_id" json:"task_id"`
 		CampaignID          int64   `db:"campaign_id" json:"campaign_id"`
@@ -1650,6 +1651,35 @@ func (gw *Gateway) handleListJobRemediationRuns(w http.ResponseWriter, r *http.R
 		CompletedAt         *string `db:"completed_at" json:"completed_at,omitempty"`
 		CampaignStartedAt   *string `db:"campaign_started_at" json:"campaign_started_at,omitempty"`
 		CampaignCompletedAt *string `db:"campaign_completed_at" json:"campaign_completed_at,omitempty"`
+		AIFindingsLoaded    int     `db:"ai_findings_loaded" json:"ai_findings_loaded"`
+		AIFindingsDeduped   int     `db:"ai_findings_deduped" json:"ai_findings_deduped"`
+		AITriageStatus      string  `db:"ai_triage_status" json:"ai_triage_status,omitempty"`
+		AITriageBatches     int     `db:"ai_triage_batches" json:"ai_triage_batches"`
+		AITriageSummary     string  `db:"ai_triage_summary" json:"ai_triage_summary,omitempty"`
+		AITriageJSON        string  `db:"ai_triage_json" json:"ai_triage_json,omitempty"`
+		AIFixAttempted      int     `db:"ai_fix_attempted" json:"ai_fix_attempted"`
+		AIFixQueued         int     `db:"ai_fix_queued" json:"ai_fix_queued"`
+		AIFixSkippedLowConf int     `db:"ai_fix_skipped_low_conf" json:"ai_fix_skipped_low_conf"`
+		AIFixFailed         int     `db:"ai_fix_failed" json:"ai_fix_failed"`
+		AIUpdatedAt         *string `db:"ai_updated_at" json:"ai_updated_at,omitempty"`
+	}
+	type countRow struct {
+		N int `db:"n"`
+	}
+	var count countRow
+	if err := gw.db.Get(r.Context(), &count, `
+		SELECT COUNT(*) AS n
+		FROM remediation_tasks t
+		INNER JOIN remediation_campaigns c ON c.id = t.campaign_id
+		WHERE t.scan_job_id = ?
+	`, id); err != nil {
+		slog.Warn("Failed to count remediation runs for scan job", "scan_job_id", id, "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 	var rows []row
 	if err := gw.db.Select(r.Context(), &rows, `
@@ -1667,13 +1697,24 @@ func (gw *Gateway) handleListJobRemediationRuns(w http.ResponseWriter, r *http.R
 		  t.started_at AS started_at,
 		  t.completed_at AS completed_at,
 		  c.started_at AS campaign_started_at,
-		  c.completed_at AS campaign_completed_at
+		  c.completed_at AS campaign_completed_at,
+		  COALESCE(t.ai_findings_loaded, 0) AS ai_findings_loaded,
+		  COALESCE(t.ai_findings_deduped, 0) AS ai_findings_deduped,
+		  COALESCE(t.ai_triage_status, '') AS ai_triage_status,
+		  COALESCE(t.ai_triage_batches, 0) AS ai_triage_batches,
+		  COALESCE(t.ai_triage_summary, '') AS ai_triage_summary,
+		  COALESCE(t.ai_triage_json, '') AS ai_triage_json,
+		  COALESCE(t.ai_fix_attempted, 0) AS ai_fix_attempted,
+		  COALESCE(t.ai_fix_queued, 0) AS ai_fix_queued,
+		  COALESCE(t.ai_fix_skipped_low_conf, 0) AS ai_fix_skipped_low_conf,
+		  COALESCE(t.ai_fix_failed, 0) AS ai_fix_failed,
+		  t.ai_updated_at AS ai_updated_at
 		FROM remediation_tasks t
 		INNER JOIN remediation_campaigns c ON c.id = t.campaign_id
 		WHERE t.scan_job_id = ?
 		ORDER BY t.id DESC
-		LIMIT 20
-	`, id); err != nil {
+		LIMIT ? OFFSET ?
+	`, id, pg.PageSize, pg.Offset); err != nil {
 		slog.Warn("Failed to list remediation runs for scan job", "scan_job_id", id, "error", err)
 		if hint := remediationSchemaHint(err); hint != "" {
 			writeError(w, http.StatusInternalServerError, hint)
@@ -1685,7 +1726,17 @@ func (gw *Gateway) handleListJobRemediationRuns(w http.ResponseWriter, r *http.R
 	if rows == nil {
 		rows = []row{}
 	}
-	writeJSON(w, http.StatusOK, rows)
+	totalPages := 1
+	if count.N > 0 {
+		totalPages = (count.N + pg.PageSize - 1) / pg.PageSize
+	}
+	writeJSON(w, http.StatusOK, paginationResult[row]{
+		Items:      rows,
+		Page:       pg.Page,
+		PageSize:   pg.PageSize,
+		Total:      count.N,
+		TotalPages: totalPages,
+	})
 }
 
 func (gw *Gateway) handleListFindingPathIgnores(w http.ResponseWriter, r *http.Request) {

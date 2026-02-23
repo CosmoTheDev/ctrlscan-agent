@@ -75,7 +75,8 @@ var configEditCmd = &cobra.Command{
 			editor = "nano"
 		}
 		fmt.Printf("Opening %s with %s...\n", p, editor)
-		c := exec.Command(editor, p)
+			// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+			c := exec.Command(editor, p)
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr

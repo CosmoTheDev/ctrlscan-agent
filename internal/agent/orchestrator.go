@@ -29,8 +29,11 @@ type Orchestrator struct {
 
 // OrchestratorOptions controls loop behavior for different runtimes (CLI agent vs gateway).
 type OrchestratorOptions struct {
-	RunInitialSweep bool
-	EnablePolling   bool
+	RunInitialSweep  bool
+	EnablePolling    bool
+	OnSweepStarted   func(payload map[string]any)
+	OnSweepCompleted func(payload map[string]any)
+	OnRepoSkipped    func(payload map[string]any)
 }
 
 // TriggerRequest optionally overrides scan settings for the next sweep only.
@@ -231,6 +234,10 @@ func (o *Orchestrator) runSweep(
 	}()
 
 	effectiveCfg := o.cfg
+	sweepStartedAt := time.Now().UTC()
+	skippedByReason := map[string]int{}
+	var skippedTotal int
+	var skipMu sync.Mutex
 	if req != nil && (req.Workers > 0 || len(req.ScanTargets) > 0) {
 		cfgCopy := *o.cfg
 		if req.Workers > 0 {
@@ -252,6 +259,21 @@ func (o *Orchestrator) runSweep(
 	workers := effectiveCfg.Agent.Workers
 	if workers <= 0 {
 		workers = 3
+	}
+	if o.opts.OnSweepStarted != nil {
+		payload := map[string]any{
+			"workers":    workers,
+			"started_at": sweepStartedAt.Format(time.RFC3339),
+		}
+		if req != nil {
+			if len(req.ScanTargets) > 0 {
+				payload["scan_targets"] = append([]string(nil), req.ScanTargets...)
+			}
+			if len(req.SelectedRepos) > 0 {
+				payload["selected_repos"] = len(req.SelectedRepos)
+			}
+		}
+		o.opts.OnSweepStarted(payload)
 	}
 
 	var wg sync.WaitGroup
@@ -276,7 +298,19 @@ func (o *Orchestrator) runSweep(
 		scanWg.Add(1)
 		go func(workerID int) {
 			defer scanWg.Done()
-			sa := NewScannerAgent(workerID, effectiveCfg, o.db, scannerList)
+			sa := NewScannerAgent(workerID, effectiveCfg, o.db, scannerList, func(payload map[string]any) {
+				reason := ""
+				if v, ok := payload["reason"].(string); ok {
+					reason = v
+				}
+				skipMu.Lock()
+				skippedTotal++
+				skippedByReason[reason]++
+				skipMu.Unlock()
+				if o.opts.OnRepoSkipped != nil {
+					o.opts.OnRepoSkipped(payload)
+				}
+			})
 			sa.Run(sweepCtx, repoQueue, fixQueue)
 		}(i)
 	}
@@ -302,14 +336,38 @@ func (o *Orchestrator) runSweep(
 
 	select {
 	case <-ctx.Done():
+		o.emitSweepCompleted(sweepStartedAt, "shutdown", skippedTotal, skippedByReason)
 		return nil
 	case <-sweepCtx.Done():
 		slog.Info("Orchestrator: sweep cancelled")
+		o.emitSweepCompleted(sweepStartedAt, "cancelled", skippedTotal, skippedByReason)
 		return nil
 	case <-done:
 		slog.Info("Orchestrator: sweep complete")
+		o.emitSweepCompleted(sweepStartedAt, "completed", skippedTotal, skippedByReason)
 		return nil
 	}
+}
+
+func (o *Orchestrator) emitSweepCompleted(start time.Time, status string, skippedTotal int, skippedByReason map[string]int) {
+	if o.opts.OnSweepCompleted == nil {
+		return
+	}
+	reasons := map[string]int{}
+	for k, v := range skippedByReason {
+		if k == "" || v == 0 {
+			continue
+		}
+		reasons[k] = v
+	}
+	o.opts.OnSweepCompleted(map[string]any{
+		"status":            status,
+		"started_at":        start.Format(time.RFC3339),
+		"completed_at":      time.Now().UTC().Format(time.RFC3339),
+		"duration_seconds":  time.Since(start).Seconds(),
+		"skipped_repos":     skippedTotal,
+		"skipped_by_reason": reasons,
+	})
 }
 
 func (o *Orchestrator) enqueueSelectedRepos(ctx context.Context, providers []repository.RepoProvider, selected []SelectedRepo, out chan<- repoJob) {

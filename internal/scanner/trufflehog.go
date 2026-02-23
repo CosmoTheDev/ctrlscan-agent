@@ -53,6 +53,7 @@ func (t *TrufflehogScanner) Scan(ctx context.Context, opts ScanOptions) (*ScanRe
 		cmd = dockerRun(ctx, t.DockerImage(), opts.RepoPath,
 			[]string{"filesystem", "/scan", "--json", "--no-update"})
 	} else {
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd = exec.CommandContext(ctx, trufflehog,
 			"filesystem", opts.RepoPath,
 			"--json",

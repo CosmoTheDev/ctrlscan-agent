@@ -35,11 +35,20 @@ type Gateway struct {
 
 // New creates a Gateway. Call Start() to begin serving.
 func New(cfg *config.Config, db database.DB) *Gateway {
+	b := newBroadcaster()
 	orch := agent.NewOrchestratorWithOptions(cfg, db, agent.OrchestratorOptions{
 		RunInitialSweep: false,
 		EnablePolling:   false, // gateway scans are driven by API triggers and cron schedules
+		OnSweepStarted: func(payload map[string]any) {
+			b.send(SSEEvent{Type: "sweep.started", Payload: payload})
+		},
+		OnSweepCompleted: func(payload map[string]any) {
+			b.send(SSEEvent{Type: "sweep.completed", Payload: payload})
+		},
+		OnRepoSkipped: func(payload map[string]any) {
+			b.send(SSEEvent{Type: "repo.skipped", Payload: payload})
+		},
 	})
-	b := newBroadcaster()
 
 	gw := &Gateway{
 		cfg:         cfg,

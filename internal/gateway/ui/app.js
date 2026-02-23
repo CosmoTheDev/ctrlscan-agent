@@ -26,7 +26,20 @@ const state = {
     data: null,
     error: "",
   },
+  scanDetailFindingsPage: 1,
+  scanDetailFindingsPageSize: 25,
+  scanDetailFindingsFilters: {
+    kind: "",
+    scanner: "",
+    severity: "",
+  },
+  scansPage: 1,
+  scansPageSize: 20,
   stopBusy: false,
+  sweepUi: {
+    skipEventCount: 0,
+    latestSummary: null,
+  },
 };
 
 const views = [
@@ -52,6 +65,13 @@ function escapeHtml(v) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function setHtml(el, html) {
+  if (!el) return;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  el.replaceChildren(range.createContextualFragment(String(html ?? "")));
 }
 
 function repoSelectionKey(r) {
@@ -111,6 +131,31 @@ function fmtDate(v) {
   return d.toLocaleString();
 }
 
+function normalizeSeverityLabel(v) {
+  return String(v || "").trim().toUpperCase();
+}
+
+function severityBucket(v) {
+  const s = normalizeSeverityLabel(v);
+  if (s === "CRITICAL") return "CRITICAL";
+  if (s === "HIGH" || s === "ERROR") return "HIGH";
+  if (s === "MEDIUM" || s === "WARNING" || s === "WARN") return "MEDIUM";
+  if (s === "LOW" || s === "INFO") return "LOW";
+  return s;
+}
+
+function countFindingsBySeverity(findings) {
+  const totals = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of findings || []) {
+    const s = severityBucket(f.severity);
+    if (s === "CRITICAL") totals.critical++;
+    else if (s === "HIGH") totals.high++;
+    else if (s === "MEDIUM") totals.medium++;
+    else if (s === "LOW") totals.low++;
+  }
+  return totals;
+}
+
 function statusClass(v) {
   const s = String(v || "").toLowerCase();
   if (s.includes("complete")) return "status-completed";
@@ -121,7 +166,59 @@ function statusClass(v) {
   return "";
 }
 
-function setView(id) {
+function viewToPath(id) {
+  switch (id) {
+    case "overview": return "/ui/overview";
+    case "scans": return "/ui/scans";
+    case "cron": return "/ui/cronjobs";
+    case "agents": return "/ui/agents";
+    case "config": return "/ui/config";
+    case "events": return "/ui/events";
+    case "scan-detail":
+      if (state.selectedJobId) return `/ui/scans/${state.selectedJobId}`;
+      return "/ui/scans";
+    default:
+      return "/ui";
+  }
+}
+
+async function applyRouteFromLocation() {
+  const path = window.location.pathname || "/ui";
+  const parts = path.replace(/^\/+|\/+$/g, "").split("/");
+  if (parts[0] !== "ui") {
+    setView("overview");
+    return;
+  }
+  const section = parts[1] || "overview";
+  if (section === "scans" && parts[2]) {
+    const id = Number(parts[2]);
+    if (Number.isFinite(id) && id > 0) {
+      try {
+        await openScanDetailPage(id, { pushHistory: false });
+        return;
+      } catch (_) {
+        // fall through to scans page if deep-link job no longer exists
+      }
+    }
+    setView("scans");
+    return;
+  }
+  if (section === "" || section === "ui" || section === "overview") {
+    setView("overview");
+    return;
+  }
+  const alias = {
+    cronjobs: "cron",
+    cron: "cron",
+    agents: "agents",
+    config: "config",
+    events: "events",
+    scans: "scans",
+  };
+  setView(alias[section] || "overview");
+}
+
+function setView(id, opts = {}) {
   state.view = id;
   for (const v of views) {
     document.getElementById(`view-${v.id}`).classList.toggle("active", v.id === id);
@@ -129,18 +226,25 @@ function setView(id) {
   const meta = views.find(v => v.id === id);
   document.getElementById("pageTitle").textContent = meta.title;
   document.getElementById("pageSubtitle").textContent = meta.subtitle;
+  const path = viewToPath(id);
+  if (opts.replaceHistory) {
+    history.replaceState({ view: id, jobId: state.selectedJobId || null }, "", path);
+  } else if (opts.pushHistory) {
+    history.pushState({ view: id, jobId: state.selectedJobId || null }, "", path);
+  }
   renderNav();
 }
 
 function renderNav() {
   const nav = document.getElementById("nav");
-  nav.innerHTML = views.filter(v => !v.hidden).map(v => `<button data-view="${v.id}" class="${state.view === v.id ? "active" : ""}">${escapeHtml(v.title)}</button>`).join("");
-  nav.querySelectorAll("button").forEach(btn => btn.addEventListener("click", () => setView(btn.dataset.view)));
+  setHtml(nav, views.filter(v => !v.hidden).map(v => `<button data-view="${v.id}" class="${state.view === v.id ? "active" : ""}">${escapeHtml(v.title)}</button>`).join(""));
+  nav.querySelectorAll("button").forEach(btn => btn.addEventListener("click", () => setView(btn.dataset.view, { pushHistory: true })));
 }
 
 function pushEvent(evt) {
   state.events.unshift({ at: new Date().toISOString(), ...evt });
   if (state.events.length > 200) state.events.length = 200;
+  handleToastForEvent(evt);
   if (evt.type === "status.update" || evt.type === "connected") {
     state.status = evt.payload || state.status;
     renderOverview();
@@ -151,7 +255,138 @@ function pushEvent(evt) {
   if (["agent.triggered", "agent.stop_requested", "schedule.fired", "schedule.triggered", "fix.approved", "fix.rejected"].includes(evt.type)) {
     scheduleLiveRefresh();
   }
+  if (["sweep.started", "sweep.completed"].includes(evt.type)) {
+    renderOverview();
+    renderScans();
+  }
   renderEvents();
+}
+
+function showToast({ title, message = "", kind = "info", timeoutMs = 3500 } = {}) {
+  const stack = document.getElementById("toastStack");
+  if (!stack) return;
+  const el = document.createElement("div");
+  el.className = `toast toast-${kind}`;
+  setHtml(el, `
+    <div class="toast-title">${escapeHtml(title || "Notice")}</div>
+    ${message ? `<div class="toast-body">${escapeHtml(message)}</div>` : ""}
+  `);
+  stack.prepend(el);
+  const remove = () => {
+    if (el.parentNode) el.parentNode.removeChild(el);
+  };
+  const t = setTimeout(remove, timeoutMs);
+  el.addEventListener("click", () => {
+    clearTimeout(t);
+    remove();
+  });
+}
+
+function handleToastForEvent(evt) {
+  const payload = evt?.payload && typeof evt.payload === "object" ? evt.payload : {};
+  switch (evt?.type) {
+    case "agent.triggered": {
+      state.sweepUi.skipEventCount = 0;
+      const selected = Number(payload.selected_repos || 0);
+      const workers = Number(payload.workers || 0);
+      let msg = selected > 0 ? `Trigger accepted for ${selected} selected repos.` : "Trigger accepted. Discovery and scans will start shortly.";
+      if (workers > 0) msg += ` Workers: ${workers}.`;
+      showToast({ title: "Sweep Triggered", message: msg, kind: "info", timeoutMs: 3000 });
+      break;
+    }
+    case "sweep.started": {
+      state.sweepUi.latestSummary = {
+        status: "running",
+        started_at: payload.started_at || new Date().toISOString(),
+        completed_at: "",
+        duration_seconds: 0,
+        workers: Number(payload.workers || 0),
+        selected_repos: Number(payload.selected_repos || 0),
+        scan_targets: Array.isArray(payload.scan_targets) ? payload.scan_targets : [],
+        skipped_repos: 0,
+        skipped_by_reason: {},
+      };
+      const workers = Number(payload.workers || 0);
+      const selected = Number(payload.selected_repos || 0);
+      let msg = workers > 0 ? `${workers} worker${workers === 1 ? "" : "s"} active.` : "Workers active.";
+      if (selected > 0) msg += ` Scanning ${selected} selected repos.`;
+      showToast({ title: "Sweep Started", message: msg, kind: "success", timeoutMs: 2800 });
+      break;
+    }
+    case "repo.skipped": {
+      state.sweepUi.skipEventCount = (state.sweepUi.skipEventCount || 0) + 1;
+      break; // avoid spamming a toast per repo; summary shown on sweep.completed
+    }
+    case "sweep.completed": {
+      state.sweepUi.latestSummary = {
+        ...(state.sweepUi.latestSummary || {}),
+        status: String(payload.status || "completed"),
+        started_at: payload.started_at || state.sweepUi.latestSummary?.started_at || "",
+        completed_at: payload.completed_at || new Date().toISOString(),
+        duration_seconds: Number(payload.duration_seconds || 0),
+        skipped_repos: Number(payload.skipped_repos || 0),
+        skipped_by_reason: payload.skipped_by_reason && typeof payload.skipped_by_reason === "object" ? payload.skipped_by_reason : {},
+      };
+      const status = String(payload.status || "completed");
+      const skipped = Number(payload.skipped_repos || 0);
+      const reasons = payload.skipped_by_reason && typeof payload.skipped_by_reason === "object" ? payload.skipped_by_reason : {};
+      const recentSkipped = Number(reasons["recently scanned within 24h"] || 0);
+      let title = "Sweep Completed";
+      let kind = "success";
+      if (status === "cancelled") {
+        title = "Sweep Cancelled";
+        kind = "warn";
+      } else if (status !== "completed") {
+        title = `Sweep ${status[0]?.toUpperCase() || ""}${status.slice(1)}`;
+        kind = "info";
+      }
+      let msg = skipped > 0 ? `${skipped} repo${skipped === 1 ? "" : "s"} skipped.` : "No repo skips reported.";
+      if (recentSkipped > 0) msg += ` ${recentSkipped} skipped because they were scanned within 24h.`;
+      const dur = Number(payload.duration_seconds || 0);
+      if (dur > 0) msg += ` Duration: ${dur.toFixed(1)}s.`;
+      showToast({ title, message: msg, kind, timeoutMs: 5500 });
+      break;
+    }
+    case "agent.stop_requested": {
+      showToast({ title: "Stopping Sweep", message: "Cancellation requested. Running scanners will stop shortly.", kind: "warn", timeoutMs: 3500 });
+      break;
+    }
+  }
+}
+
+function renderSweepSummaryCard() {
+  const s = state.sweepUi?.latestSummary;
+  if (!s) {
+    return `
+      <div class="card">
+        <h3>Latest Sweep Summary</h3>
+        <div class="muted">No sweep lifecycle events seen yet in this session. Trigger a scan to populate this panel.</div>
+      </div>
+    `;
+  }
+  const status = String(s.status || "unknown");
+  const reasons = s.skipped_by_reason && typeof s.skipped_by_reason === "object" ? s.skipped_by_reason : {};
+  const reasonParts = Object.entries(reasons)
+    .filter(([, n]) => Number(n) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 3)
+    .map(([k, n]) => `${n} ${k}`);
+  const workers = Number(s.workers || 0);
+  const selectedRepos = Number(s.selected_repos || 0);
+  const targets = Array.isArray(s.scan_targets) ? s.scan_targets : [];
+  return `
+    <div class="card">
+      <h3>Latest Sweep Summary</h3>
+      <div class="stack">
+        <div><span class="badge ${statusClass(status)}">${escapeHtml(status)}</span></div>
+        <div class="muted">Started ${escapeHtml(fmtDate(s.started_at))}${s.completed_at ? ` • Completed ${escapeHtml(fmtDate(s.completed_at))}` : ""}</div>
+        <div>Duration: <strong>${s.duration_seconds ? `${Number(s.duration_seconds).toFixed(1)}s` : "n/a"}</strong></div>
+        <div>Skipped repos: <strong>${Number(s.skipped_repos || 0)}</strong></div>
+        ${reasonParts.length ? `<div class="muted">Skip reasons: ${escapeHtml(reasonParts.join(" • "))}</div>` : ``}
+        <div class="muted">${workers > 0 ? `${workers} worker${workers === 1 ? "" : "s"}` : "Workers unknown"}${selectedRepos > 0 ? ` • ${selectedRepos} selected repos` : ""}${targets.length ? ` • targets: ${targets.join(", ")}` : ""}</div>
+      </div>
+    </div>
+  `;
 }
 
 function renderHealthPill() {
@@ -170,7 +405,7 @@ function renderOverview() {
   const st = state.status || {};
   const sum = state.jobSummary || {};
   const last = state.jobs[0];
-  root.innerHTML = `
+  setHtml(root, `
     <div class="grid cols-4">
       <div class="card"><div class="metric-label">Agent</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Ready" : "Idle")}</div></div>
       <div class="card"><div class="metric-label">Queued Repos</div><div class="metric-value">${st.queued_repos ?? 0}</div></div>
@@ -207,7 +442,10 @@ function renderOverview() {
         </div>` : `<div class="muted">No scan jobs yet.</div>`}
       </div>
     </div>
-  `;
+    <div style="margin-top:14px">
+      ${renderSweepSummaryCard()}
+    </div>
+  `);
   root.querySelector("#ovTrigger")?.addEventListener("click", openTriggerModal);
   root.querySelector("#ovStop")?.addEventListener("click", stopSweep);
   root.querySelector("#ovPauseResume")?.addEventListener("click", async () => {
@@ -229,31 +467,45 @@ function renderOverview() {
 function renderScans() {
   const root = document.getElementById("view-scans");
   const rows = state.jobs || [];
+  const pageSize = state.scansPageSize || 20;
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = Math.min(Math.max(1, state.scansPage || 1), totalPages);
+  state.scansPage = page;
+  const pageStart = (page - 1) * pageSize;
+  const visibleRows = rows.slice(pageStart, pageStart + pageSize);
   const selectedIds = state.selectedScanJobIds || {};
   const selectedCount = rows.filter(j => selectedIds[j.id]).length;
-  const allVisibleSelected = rows.length > 0 && selectedCount === rows.length;
+  const visibleSelectedCount = visibleRows.filter(j => selectedIds[j.id]).length;
+  const allVisibleSelected = visibleRows.length > 0 && visibleSelectedCount === visibleRows.length;
   const selectedJob = state.selectedJob;
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
-  root.innerHTML = `
-    <div class="split">
+  setHtml(root, `
+    <div class="stack">
+      ${renderSweepSummaryCard()}
+      <div class="split">
       <div class="card">
         <div class="toolbar">
           <button id="scansRefresh" class="btn btn-secondary">Refresh Jobs</button>
           <button id="scansDeleteSelected" class="btn btn-danger" ${selectedCount === 0 ? "disabled" : ""}>Delete Selected (${selectedCount})</button>
           <button id="scansDeleteAll" class="btn btn-danger" ${rows.length === 0 ? "disabled" : ""}>Delete All</button>
+          <span class="muted">Page ${page} of ${totalPages} • Showing ${rows.length === 0 ? 0 : (pageStart + 1)}-${Math.min(pageStart + pageSize, rows.length)} of ${rows.length}</span>
+          <button id="scansPrevPage" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
+          <button id="scansNextPage" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
+        </div>
+        <div class="toolbar">
           <span class="muted">Click a job to inspect details. Use checkboxes for bulk delete.</span>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th style="width:34px"><input type="checkbox" id="scanSelectAll" ${allVisibleSelected ? "checked" : ""} ${rows.length === 0 ? "disabled" : ""}></th>
+                <th style="width:34px"><input type="checkbox" id="scanSelectAll" ${allVisibleSelected ? "checked" : ""} ${visibleRows.length === 0 ? "disabled" : ""}></th>
                 <th>ID</th><th>Repo</th><th>Status</th><th>Started</th><th>C/H/M/L</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              ${rows.map(j => `
+              ${visibleRows.map(j => `
                 <tr data-job-id="${j.id}" style="cursor:pointer; ${state.selectedJobId === j.id ? "background:rgba(79,140,255,.08)" : ""}">
                   <td><input type="checkbox" data-job-select="${j.id}" ${selectedIds[j.id] ? "checked" : ""}></td>
                   <td>#${j.id}</td>
@@ -295,32 +547,38 @@ function renderScans() {
               </table>
             </div>
             <div class="kicker">Findings (structured from DB when available, otherwise parsed from raw scanner output)</div>
-            <div class="table-wrap" style="max-height:270px">
+            <div class="table-wrap compact-findings-wrap" style="max-height:270px">
               <table>
-                <thead><tr><th>Kind</th><th>Scanner</th><th>Severity</th><th>Title</th><th>Path/Package</th><th>Line</th><th>Detail</th></tr></thead>
+                <thead><tr><th>Kind</th><th>Scanner</th><th>Severity</th><th>Path/Package</th></tr></thead>
                 <tbody>
                 ${findings.map(f => `<tr>
                   <td>${escapeHtml(f.kind)}</td>
                   <td>${escapeHtml(f.scanner || "")}</td>
-                  <td>${escapeHtml(f.severity)}</td>
-                  <td>${escapeHtml(f.title)}</td>
+                  <td>${escapeHtml(severityBucket ? severityBucket(f.severity) : f.severity)}</td>
                   <td>${escapeHtml(f.file_path || f.package || "")}${f.version ? ` <span class="muted">@${escapeHtml(f.version)}</span>` : ""}</td>
-                  <td>${f.line || ""}</td>
-                  <td class="muted">${escapeHtml(f.fix ? `Fix: ${f.fix}` : (f.message || ""))}</td>
-                </tr>`).join("") || `<tr><td colspan="7" class="muted">No findings available for this job yet. For new scans, details are parsed from raw scanner output when normalized DB rows are absent.</td></tr>`}
+                </tr>`).join("") || `<tr><td colspan="4" class="muted">No findings available for this job yet. For new scans, details are parsed from raw scanner output when normalized DB rows are absent.</td></tr>`}
                 </tbody>
               </table>
             </div>
           </div>
         ` : `<div class="muted">Select a scan job to inspect details.</div>`}
       </div>
+      </div>
     </div>
-  `;
+  `);
   root.querySelector("#scansRefresh")?.addEventListener("click", refreshJobs);
+  root.querySelector("#scansPrevPage")?.addEventListener("click", () => {
+    state.scansPage = Math.max(1, (state.scansPage || 1) - 1);
+    renderScans();
+  });
+  root.querySelector("#scansNextPage")?.addEventListener("click", () => {
+    state.scansPage = (state.scansPage || 1) + 1;
+    renderScans();
+  });
   root.querySelector("#scansDeleteSelected")?.addEventListener("click", deleteSelectedScanJobs);
   root.querySelector("#scansDeleteAll")?.addEventListener("click", deleteAllScanJobs);
   root.querySelector("#scanSelectAll")?.addEventListener("change", (e) => {
-    for (const row of rows) {
+    for (const row of visibleRows) {
       if (e.target.checked) {
         state.selectedScanJobIds[row.id] = true;
       } else {
@@ -361,16 +619,41 @@ function renderScans() {
 function renderScanDetailPage() {
   const root = document.getElementById("view-scan-detail");
   const selectedJob = state.selectedJob;
+  if (!selectedJob) {
+    setHtml(root, `<div class="card"><div class="muted">No scan selected. Open a job from the Scans page.</div></div>`);
+    return;
+  }
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
+  const filters = state.scanDetailFindingsFilters || { kind: "", scanner: "", severity: "" };
+  const filteredFindings = findings.filter((f) => {
+    if (filters.kind && String(f.kind || "") !== filters.kind) return false;
+    if (filters.scanner && String(f.scanner || "") !== filters.scanner) return false;
+    if (filters.severity && severityBucket(f.severity) !== filters.severity) return false;
+    return true;
+  });
+  const derivedSeverity = countFindingsBySeverity(findings);
+  const hasFindings = findings.length > 0;
+  const severityCards = {
+    critical: hasFindings ? derivedSeverity.critical : (selectedJob.findings_critical ?? 0),
+    high: hasFindings ? derivedSeverity.high : (selectedJob.findings_high ?? 0),
+    medium: hasFindings ? derivedSeverity.medium : (selectedJob.findings_medium ?? 0),
+    low: hasFindings ? derivedSeverity.low : (selectedJob.findings_low ?? 0),
+  };
+  const pageSize = state.scanDetailFindingsPageSize || 25;
+  const totalPages = Math.max(1, Math.ceil(filteredFindings.length / pageSize));
+  const page = Math.min(Math.max(1, state.scanDetailFindingsPage || 1), totalPages);
+  state.scanDetailFindingsPage = page;
+  const start = (page - 1) * pageSize;
+  const visibleFindings = filteredFindings.slice(start, start + pageSize);
+  const kindOptions = [...new Set(findings.map(f => String(f.kind || "").trim()).filter(Boolean))].sort();
+  const scannerOptions = [...new Set(findings.map(f => String(f.scanner || "").trim()).filter(Boolean))].sort();
+  const severityOptions = [...new Set(findings.map(f => severityBucket(f.severity)).filter(Boolean))]
+    .sort((a, b) => ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(a) - ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(b));
   const fixes = state.selectedJobFixes || [];
   const aiEnabled = !!state.agent?.ai_enabled;
   const mode = state.agent?.mode || "triage";
-  if (!selectedJob) {
-    root.innerHTML = `<div class="card"><div class="muted">No scan selected. Open a job from the Scans page.</div></div>`;
-    return;
-  }
-  root.innerHTML = `
+  setHtml(root, `
     <div class="scan-detail-layout">
       <div class="card">
         <div class="sticky-actions">
@@ -386,10 +669,10 @@ function renderScanDetailPage() {
         </div>
       </div>
       <div class="grid cols-4">
-        <div class="card"><div class="metric-label">Critical</div><div class="metric-value">${selectedJob.findings_critical ?? 0}</div></div>
-        <div class="card"><div class="metric-label">High</div><div class="metric-value">${selectedJob.findings_high ?? 0}</div></div>
-        <div class="card"><div class="metric-label">Medium</div><div class="metric-value">${selectedJob.findings_medium ?? 0}</div></div>
-        <div class="card"><div class="metric-label">Low</div><div class="metric-value">${selectedJob.findings_low ?? 0}</div></div>
+        <div class="card"><div class="metric-label">Critical</div><div class="metric-value">${severityCards.critical}</div></div>
+        <div class="card"><div class="metric-label">High</div><div class="metric-value">${severityCards.high}</div></div>
+        <div class="card"><div class="metric-label">Medium</div><div class="metric-value">${severityCards.medium}</div></div>
+        <div class="card"><div class="metric-label">Low</div><div class="metric-value">${severityCards.low}</div></div>
       </div>
       <div class="card">
         <h3>Scanners</h3>
@@ -410,15 +693,38 @@ function renderScanDetailPage() {
         </div>
       </div>
       <div class="card">
-        <h3>Findings</h3>
-        <div class="table-wrap">
+        <div class="toolbar">
+          <h3 style="margin:0">Findings</h3>
+          <label style="width:auto">
+            <select id="detailFindingsKindFilter">
+              <option value="">All kinds</option>
+              ${kindOptions.map(v => `<option value="${escapeHtml(v)}" ${filters.kind === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+            </select>
+          </label>
+          <label style="width:auto">
+            <select id="detailFindingsScannerFilter">
+              <option value="">All scanners</option>
+              ${scannerOptions.map(v => `<option value="${escapeHtml(v)}" ${filters.scanner === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+            </select>
+          </label>
+          <label style="width:auto">
+            <select id="detailFindingsSeverityFilter">
+              <option value="">All severities</option>
+              ${severityOptions.map(v => `<option value="${escapeHtml(v)}" ${filters.severity === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+            </select>
+          </label>
+          <span class="muted">Showing ${filteredFindings.length === 0 ? 0 : (start + 1)}-${Math.min(start + pageSize, filteredFindings.length)} of ${filteredFindings.length}${filteredFindings.length !== findings.length ? ` (filtered from ${findings.length})` : ` of ${findings.length}`}</span>
+          <button id="detailFindingsPrev" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
+          <button id="detailFindingsNext" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
+        </div>
+        <div class="table-wrap findings-table-wrap">
           <table>
             <thead><tr><th>Kind</th><th>Scanner</th><th>Severity</th><th>Title</th><th>Path</th><th>Line</th><th>Detail</th></tr></thead>
             <tbody>
-              ${findings.map(f => `<tr>
+              ${visibleFindings.map(f => `<tr>
                 <td>${escapeHtml(f.kind)}</td>
                 <td>${escapeHtml(f.scanner || "")}</td>
-                <td>${escapeHtml(f.severity)}</td>
+                <td>${escapeHtml(severityBucket(f.severity))}</td>
                 <td>${escapeHtml(f.title)}</td>
                 <td>${escapeHtml(f.file_path || f.package || "")}</td>
                 <td>${f.line || ""}</td>
@@ -427,7 +733,7 @@ function renderScanDetailPage() {
             </tbody>
           </table>
         </div>
-        <div class="footer-note">Use raw downloads for exact scanner payloads. Paths are normalized to repo-relative paths when possible.</div>
+        <div class="footer-note">Use raw downloads for exact scanner payloads. Paths are normalized to repo-relative paths when possible. Severity cards above reflect loaded findings when available.</div>
       </div>
       <div class="card">
         <h3>AI Triage / Fix Review</h3>
@@ -459,10 +765,33 @@ function renderScanDetailPage() {
         `}
       </div>
     </div>
-  `;
+  `);
   root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
     if (state.selectedJobId) await selectJob(state.selectedJobId);
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsKindFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFindingsFilters.kind = e.target.value;
+    state.scanDetailFindingsPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsScannerFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFindingsFilters.scanner = e.target.value;
+    state.scanDetailFindingsPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsSeverityFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFindingsFilters.severity = e.target.value;
+    state.scanDetailFindingsPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsPrev")?.addEventListener("click", () => {
+    state.scanDetailFindingsPage = Math.max(1, (state.scanDetailFindingsPage || 1) - 1);
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsNext")?.addEventListener("click", () => {
+    state.scanDetailFindingsPage = (state.scanDetailFindingsPage || 1) + 1;
     renderScanDetailPage();
   });
   root.querySelectorAll("[data-fix-action]").forEach((btn) => {
@@ -477,7 +806,7 @@ function renderScanDetailPage() {
 function renderCron() {
   const root = document.getElementById("view-cron");
   const rows = state.schedules || [];
-  root.innerHTML = `
+  setHtml(root, `
     <div class="card">
       <h3>Create Schedule</h3>
       <div class="form-grid">
@@ -512,7 +841,7 @@ function renderCron() {
         </table>
       </div>
     </div>
-  `;
+  `);
   root.querySelector("#cronRefresh")?.addEventListener("click", refreshCron);
   root.querySelector("#cronCreate")?.addEventListener("click", createCron);
   root.querySelectorAll("[data-action='trigger']").forEach(btn => btn.addEventListener("click", () => triggerCron(Number(btn.dataset.id))));
@@ -523,7 +852,7 @@ function renderAgents() {
   const root = document.getElementById("view-agents");
   const st = state.status || {};
   const agent = state.agent || {};
-  root.innerHTML = `
+  setHtml(root, `
     <div class="grid cols-3">
       <div class="card"><div class="metric-label">Runtime</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Running" : "Idle")}</div></div>
       <div class="card"><div class="metric-label">Scan Workers</div><div class="metric-value">${st.workers ?? state.agent?.status?.workers ?? 0}</div></div>
@@ -549,7 +878,7 @@ function renderAgents() {
         <div class="footer-note">Applies to future sweeps and persists to config.</div>
       </div>
     </div>
-  `;
+  `);
   root.querySelector("#agentsTrigger")?.addEventListener("click", openTriggerModal);
   root.querySelector("#agentsStop")?.addEventListener("click", stopSweep);
   root.querySelector("#agentsPause")?.addEventListener("click", async () => setPaused(!(state.status && state.status.paused)));
@@ -565,7 +894,7 @@ function renderAgents() {
 
 function renderConfig() {
   const root = document.getElementById("view-config");
-  root.innerHTML = `
+  setHtml(root, `
     <div class="card">
       <h3>Gateway Config</h3>
       <div class="muted">Path: ${escapeHtml(state.configPath || "default")}</div>
@@ -576,7 +905,7 @@ function renderConfig() {
       </div>
       <textarea id="cfgEditor" class="code-edit"></textarea>
     </div>
-  `;
+  `);
   const editor = root.querySelector("#cfgEditor");
   editor.value = state.config ? JSON.stringify(state.config, null, 2) : "{\n}";
   root.querySelector("#cfgRefresh").addEventListener("click", refreshConfig);
@@ -585,16 +914,16 @@ function renderConfig() {
       const parsed = JSON.parse(editor.value);
       await api("/api/config", { method: "PUT", body: JSON.stringify(parsed) });
       await refreshConfig();
-      alert("Config saved.");
+      showNotice("Config Saved", "Configuration saved.");
     } catch (err) {
-      alert(`Config save failed: ${err.message}`);
+      showNotice("Config Save Failed", err.message);
     }
   });
 }
 
 function renderEvents() {
   const root = document.getElementById("view-events");
-  root.innerHTML = `
+  setHtml(root, `
     <div class="card">
       <div class="toolbar">
         <button id="eventsClear" class="btn btn-secondary">Clear</button>
@@ -602,7 +931,7 @@ function renderEvents() {
       </div>
       <pre class="code" id="eventsLog">${escapeHtml(state.events.map(e => `${e.at} ${e.type} ${JSON.stringify(e.payload ?? {})}`).join("\n"))}</pre>
     </div>
-  `;
+  `);
   root.querySelector("#eventsClear")?.addEventListener("click", () => {
     state.events = [];
     renderEvents();
@@ -614,7 +943,7 @@ async function triggerSweep() {
     await api("/api/agent/trigger", { method: "POST", body: "{}" });
     await refreshStatus();
   } catch (err) {
-    alert(`Trigger failed: ${err.message}`);
+    showNotice("Trigger Failed", err.message);
   }
 }
 
@@ -625,11 +954,13 @@ async function triggerSweepWithOptions({ scanTargets, workers, selectedRepos }) 
     if (workers && Number(workers) > 0) payload.workers = Number(workers);
     if (Array.isArray(selectedRepos) && selectedRepos.length > 0) payload.selected_repos = selectedRepos;
     await api("/api/agent/trigger", { method: "POST", body: JSON.stringify(payload) });
+    showToast({ title: "Trigger Submitted", message: "Requested a new scan sweep. Watch the Scans page for live updates.", kind: "info", timeoutMs: 2500 });
     closeTriggerModal();
     await refreshStatus();
     await refreshAgent();
+    await refreshJobs();
   } catch (err) {
-    alert(`Trigger failed: ${err.message}`);
+    showNotice("Trigger Failed", err.message);
   }
 }
 
@@ -644,7 +975,7 @@ async function stopSweep() {
     }
     await refreshStatus();
   } catch (err) {
-    alert(`Stop failed: ${err.message}`);
+    showNotice("Stop Failed", err.message);
   } finally {
     state.stopBusy = false;
     syncStopButtons();
@@ -657,7 +988,7 @@ async function setPaused(paused) {
     await refreshStatus();
     await refreshAgent();
   } catch (err) {
-    alert(`Agent update failed: ${err.message}`);
+    showNotice("Agent Update Failed", err.message);
   }
 }
 
@@ -667,7 +998,7 @@ async function createCron() {
   const expr = root.querySelector("#cronExpr").value.trim();
   const mode = root.querySelector("#cronMode").value.trim();
   if (!name || !expr) {
-    alert("Name and expression are required.");
+    showNotice("Missing Fields", "Name and expression are required.");
     return;
   }
   try {
@@ -678,7 +1009,7 @@ async function createCron() {
     root.querySelector("#cronName").value = "";
     await refreshCron();
   } catch (err) {
-    alert(`Create schedule failed: ${err.message}`);
+    showNotice("Create Schedule Failed", err.message);
   }
 }
 
@@ -687,17 +1018,17 @@ async function triggerCron(id) {
     await api(`/api/schedules/${id}/trigger`, { method: "POST", body: "{}" });
     await refreshCron();
   } catch (err) {
-    alert(`Trigger schedule failed: ${err.message}`);
+    showNotice("Trigger Schedule Failed", err.message);
   }
 }
 
 async function deleteCron(id) {
-  if (!confirm(`Delete schedule #${id}?`)) return;
+  if (!(await showConfirm({ title: "Delete Schedule", message: `Delete schedule #${id}?`, confirmLabel: "Delete" }))) return;
   try {
     await fetch(`/api/schedules/${id}`, { method: "DELETE" });
     await refreshCron();
   } catch (err) {
-    alert(`Delete schedule failed: ${err.message}`);
+    showNotice("Delete Schedule Failed", err.message);
   }
 }
 
@@ -709,6 +1040,8 @@ async function refreshStatus() {
 async function refreshJobs() {
   state.jobs = await api("/api/jobs");
   state.jobSummary = await api("/api/jobs/summary");
+  const totalPages = Math.max(1, Math.ceil((state.jobs || []).length / (state.scansPageSize || 20)));
+  if ((state.scansPage || 1) > totalPages) state.scansPage = totalPages;
   reconcileSelectedJobs();
   if (state.selectedJobId && !state.jobs.some(j => j.id === state.selectedJobId)) {
     clearSelectedJob();
@@ -719,6 +1052,8 @@ async function refreshJobs() {
 
 async function selectJob(id) {
   state.selectedJobId = id;
+  state.scanDetailFindingsPage = 1;
+  state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "" };
   state.selectedJob = await api(`/api/jobs/${id}`);
   state.selectedJobScanners = await api(`/api/jobs/${id}/scanners`);
   state.selectedJobFindings = await api(`/api/jobs/${id}/findings?status=open`);
@@ -733,6 +1068,8 @@ function clearSelectedJob() {
   state.selectedJobScanners = [];
   state.selectedJobFindings = [];
   state.selectedJobFixes = [];
+  state.scanDetailFindingsPage = 1;
+  state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "" };
 }
 
 function reconcileSelectedJobs() {
@@ -748,20 +1085,28 @@ function reconcileSelectedJobs() {
 async function deleteOneScanJob(id) {
   const job = (state.jobs || []).find(j => j.id === id);
   const label = job ? `${job.owner}/${job.repo}` : `#${id}`;
-  if (!confirm(`Delete scan job #${id} (${label})? This removes stored findings and raw outputs for the job.`)) return;
+  if (!(await showConfirm({
+    title: "Delete Scan Job",
+    message: `Delete scan job #${id} (${label})? This removes stored findings and raw outputs for the job.`,
+    confirmLabel: "Delete",
+  }))) return;
   try {
     await api(`/api/jobs/${id}`, { method: "DELETE" });
     delete state.selectedScanJobIds[id];
     await refreshJobs();
   } catch (err) {
-    alert(`Delete failed: ${err.message}`);
+    showNotice("Delete Failed", err.message);
   }
 }
 
 async function deleteSelectedScanJobs() {
   const ids = Object.keys(state.selectedScanJobIds || {}).map(Number).filter(Boolean).sort((a, b) => a - b);
   if (ids.length === 0) return;
-  if (!confirm(`Delete ${ids.length} selected scan job${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+  if (!(await showConfirm({
+    title: "Delete Selected Scan Jobs",
+    message: `Delete ${ids.length} selected scan job${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
+    confirmLabel: "Delete Selected",
+  }))) return;
   try {
     const res = await api("/api/jobs", {
       method: "DELETE",
@@ -777,14 +1122,19 @@ async function deleteSelectedScanJobs() {
       showNotice("Delete Completed", `Deleted ${res.deleted_count || 0} jobs. Not found: ${res.not_found_ids.join(", ")}.`);
     }
   } catch (err) {
-    alert(`Bulk delete failed: ${err.message}`);
+    showNotice("Bulk Delete Failed", err.message);
   }
 }
 
 async function deleteAllScanJobs() {
   const count = (state.jobs || []).length;
   if (count === 0) return;
-  const confirmation = prompt(`Delete ALL ${count} scan jobs and their stored findings/raw outputs? Type DELETE ALL to confirm.`);
+  const confirmation = await showPrompt({
+    title: "Delete All Scan Jobs",
+    message: `Delete ALL ${count} scan jobs and their stored findings/raw outputs? Type DELETE ALL to confirm.`,
+    placeholder: "DELETE ALL",
+    confirmLabel: "Delete All",
+  });
   if (confirmation !== "DELETE ALL") return;
   try {
     await api("/api/jobs", {
@@ -795,13 +1145,13 @@ async function deleteAllScanJobs() {
     clearSelectedJob();
     await refreshJobs();
   } catch (err) {
-    alert(`Delete all failed: ${err.message}`);
+    showNotice("Delete All Failed", err.message);
   }
 }
 
-async function openScanDetailPage(id) {
+async function openScanDetailPage(id, opts = {}) {
   await selectJob(id);
-  setView("scan-detail");
+  setView("scan-detail", { pushHistory: opts.pushHistory !== false });
   renderScanDetailPage();
 }
 
@@ -864,6 +1214,9 @@ function wireGlobalButtons() {
   document.getElementById("triggerBtn").addEventListener("click", openTriggerModal);
   document.getElementById("stopBtn").addEventListener("click", stopSweep);
   syncStopButtons();
+  window.addEventListener("popstate", () => {
+    applyRouteFromLocation();
+  });
 }
 
 function scheduleLiveRefresh() {
@@ -898,7 +1251,7 @@ async function handleFixAction(id, action) {
       showNotice("PR Processing Started", "The fix was approved and PR processing has been triggered. Refresh or wait for SSE updates to see PR status.");
     }
   } catch (err) {
-    alert(`Fix action failed: ${err.message}`);
+    showNotice("Fix Action Failed", err.message);
   }
 }
 
@@ -934,6 +1287,82 @@ function wireNoticeModal() {
   });
 }
 
+let confirmModalResolve = null;
+let promptModalResolve = null;
+
+function hideConfirmModal(result) {
+  document.getElementById("confirmModal").classList.add("hidden");
+  if (confirmModalResolve) {
+    const resolve = confirmModalResolve;
+    confirmModalResolve = null;
+    resolve(!!result);
+  }
+}
+
+function showConfirm({ title, message, confirmLabel = "OK", danger = true } = {}) {
+  document.getElementById("confirmModalTitle").textContent = title || "Confirm";
+  document.getElementById("confirmModalBody").textContent = message || "Are you sure?";
+  const okBtn = document.getElementById("confirmModalOk");
+  okBtn.textContent = confirmLabel;
+  okBtn.className = danger ? "btn btn-danger" : "btn btn-primary";
+  document.getElementById("confirmModal").classList.remove("hidden");
+  return new Promise((resolve) => {
+    confirmModalResolve = resolve;
+  });
+}
+
+function wireConfirmModal() {
+  document.getElementById("confirmModalCancel").addEventListener("click", () => hideConfirmModal(false));
+  document.getElementById("confirmModalOk").addEventListener("click", () => hideConfirmModal(true));
+  document.getElementById("confirmModal").addEventListener("click", (e) => {
+    if (e.target.id === "confirmModal") hideConfirmModal(false);
+  });
+}
+
+function hidePromptModal(result) {
+  document.getElementById("promptModal").classList.add("hidden");
+  const input = document.getElementById("promptModalInput");
+  if (promptModalResolve) {
+    const resolve = promptModalResolve;
+    promptModalResolve = null;
+    resolve(result === null ? null : String(result ?? ""));
+  }
+  input.value = "";
+}
+
+function showPrompt({ title, message, placeholder = "", confirmLabel = "Confirm" } = {}) {
+  document.getElementById("promptModalTitle").textContent = title || "Confirm Action";
+  document.getElementById("promptModalBody").textContent = message || "";
+  const input = document.getElementById("promptModalInput");
+  input.value = "";
+  input.placeholder = placeholder;
+  document.getElementById("promptModalOk").textContent = confirmLabel;
+  document.getElementById("promptModal").classList.remove("hidden");
+  setTimeout(() => input.focus(), 0);
+  return new Promise((resolve) => {
+    promptModalResolve = resolve;
+  });
+}
+
+function wirePromptModal() {
+  const input = document.getElementById("promptModalInput");
+  document.getElementById("promptModalCancel").addEventListener("click", () => hidePromptModal(null));
+  document.getElementById("promptModalOk").addEventListener("click", () => hidePromptModal(input.value));
+  document.getElementById("promptModal").addEventListener("click", (e) => {
+    if (e.target.id === "promptModal") hidePromptModal(null);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      hidePromptModal(input.value);
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      hidePromptModal(null);
+    }
+  });
+}
+
 function getDefaultTriggerTargets() {
   const current = state.agent?.targets;
   if (Array.isArray(current) && current.length > 0) return [...current];
@@ -943,7 +1372,7 @@ function getDefaultTriggerTargets() {
 function renderTriggerChecklist() {
   const root = document.getElementById("targetChecklist");
   const supported = state.agent?.supported_targets || ["own_repos", "watchlist", "cve_search", "all_accessible"];
-  root.innerHTML = supported.map((t) => {
+  setHtml(root, supported.map((t) => {
     const meta = targetMeta[t] || { label: t, desc: "" };
     const checked = state.triggerPlan.targets.includes(t) ? "checked" : "";
     return `<div class="check-item">
@@ -955,7 +1384,7 @@ function renderTriggerChecklist() {
         </span>
       </label>
     </div>`;
-  }).join("");
+  }).join(""));
   root.querySelectorAll("input[type='checkbox'][data-target]").forEach((cb) => {
     cb.addEventListener("change", () => {
       const t = cb.dataset.target;
@@ -976,25 +1405,25 @@ function renderTriggerPreview() {
   const root = document.getElementById("triggerPreviewBody");
   if (!root) return;
   if (state.triggerPreview.loading) {
-    root.innerHTML = `<div class="muted">Loading preview…</div>`;
+    setHtml(root, `<div class="muted">Loading preview…</div>`);
     return;
   }
   if (state.triggerPlan.targets.length === 0) {
-    root.innerHTML = `<div class="muted">No targets selected. Select one or more targets to preview and choose repositories.</div>`;
+    setHtml(root, `<div class="muted">No targets selected. Select one or more targets to preview and choose repositories.</div>`);
     return;
   }
   if (state.triggerPreview.error) {
-    root.innerHTML = `<div class="preview-errors">${escapeHtml(state.triggerPreview.error)}</div>`;
+    setHtml(root, `<div class="preview-errors">${escapeHtml(state.triggerPreview.error)}</div>`);
     return;
   }
   const data = state.triggerPreview.data;
   if (!data || !Array.isArray(data.targets)) {
-    root.innerHTML = `<div class="muted">Preview unavailable.</div>`;
+    setHtml(root, `<div class="muted">Preview unavailable.</div>`);
     return;
   }
   const previewRepos = getPreviewSampleRepos();
   const selectedCount = getSelectedPreviewRepos().length;
-  root.innerHTML = data.targets.map((t) => `
+  const sectionsHtml = data.targets.map((t) => `
     <div class="preview-section">
       <h4>${escapeHtml((targetMeta[t.target]?.label) || t.target)}</h4>
       <div class="preview-meta">${t.repo_count || 0} repositories visible${(t.samples && t.samples.length < (t.repo_count || 0)) ? ` (showing ${t.samples.length})` : ""}</div>
@@ -1012,13 +1441,14 @@ function renderTriggerPreview() {
       ${(t.errors && t.errors.length) ? `<div class="preview-errors">${escapeHtml(t.errors.join(" | "))}</div>` : ""}
     </div>
   `).join("");
-  root.innerHTML = `
+  const toolbarHtml = `
     <div class="toolbar preview-toolbar">
       <button id="previewReposSelectAll" class="btn btn-secondary" ${previewRepos.length === 0 ? "disabled" : ""}>Select All Shown</button>
       <button id="previewReposSelectNone" class="btn btn-secondary" ${selectedCount === 0 ? "disabled" : ""}>Select None</button>
       <span class="muted">${selectedCount} repo${selectedCount === 1 ? "" : "s"} selected${previewRepos.length ? ` (from ${previewRepos.length} shown)` : ""}. If any are selected, this trigger scans only those repos.</span>
     </div>
-  ` + root.innerHTML;
+  `;
+  setHtml(root, toolbarHtml + sectionsHtml);
   root.querySelectorAll("input[type='checkbox'][data-preview-repo]").forEach((cb) => {
     cb.addEventListener("change", () => {
       const key = cb.dataset.previewRepo;
@@ -1108,13 +1538,13 @@ function wireTriggerModal() {
     const workersRaw = document.getElementById("triggerWorkers").value.trim();
     const selectedRepos = getSelectedPreviewRepos();
     if (state.triggerPlan.targets.length === 0 && selectedRepos.length === 0) {
-      alert("Select at least one scan target or choose one or more preview repos.");
+      showNotice("Nothing Selected", "Select at least one scan target or choose one or more preview repos.");
       return;
     }
     if (workersRaw !== "") {
       const n = Number(workersRaw);
       if (!Number.isFinite(n) || n < 1 || n > 64) {
-        alert("Workers must be between 1 and 64.");
+        showNotice("Invalid Workers", "Workers must be between 1 and 64.");
         return;
       }
     }
@@ -1133,10 +1563,15 @@ async function bootstrap() {
   renderNav();
   wireGlobalButtons();
   wireNoticeModal();
+  wireConfirmModal();
+  wirePromptModal();
   wireTriggerModal();
+  // Initialize view without rewriting the current URL; route parsing below
+  // will choose the correct view and preserve deep links on browser refresh.
   setView("overview");
   connectEvents();
   await refreshAll();
+  await applyRouteFromLocation();
   setInterval(() => {
     if (document.visibilityState === "hidden") return;
     scheduleLiveRefresh();

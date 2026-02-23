@@ -1,0 +1,167 @@
+name: Actions Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.7"
+          cache: false
+
+      - name: Install actionlint
+        run: "go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.8"
+
+      - name: Lint workflows
+        run: '"$(go env GOPATH)/bin/actionlint" -color'
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor
+        run: pipx install zizmor
+
+      - name: Run zizmor
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports
+          zizmor --format sarif . > reports/zizmor.sarif
+
+      - name: Upload zizmor SARIF
+        if: ${{ always() && hashFiles('reports/zizmor.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
+        with:
+          sarif_file: reports/zizmor.sarif
+          category: zizmor
+
+  octoscan:
+    name: octoscan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install octoscan
+        run: |
+          OCTOSCAN_VERSION="0.1.6"
+          curl -sSfL -o /tmp/octoscan \
+            "https://github.com/synacktiv/octoscan/releases/download/v${OCTOSCAN_VERSION}/octoscan"
+          install -m 0755 /tmp/octoscan /usr/local/bin/octoscan
+          octoscan version || octoscan --help | head -1
+
+      - name: Run octoscan
+        continue-on-error: true
+        run: |
+          mkdir -p reports /tmp/octoscan-sarif
+          # Human-readable output
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -f "$f" ] || continue
+            echo "--- Scanning: $f ---"
+            octoscan scan "$f" || true
+          done
+          # Collect per-file SARIF (only keep files with a valid .runs array)
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -f "$f" ] || continue
+            tmpf="/tmp/octoscan-sarif/$(basename "$f").sarif"
+            octoscan scan --format sarif "$f" > "$tmpf" 2>/dev/null || true
+            jq -e 'type == "object" and (.runs | type == "array")' "$tmpf" > /dev/null 2>&1 || rm -f "$tmpf"
+          done
+          # Merge valid SARIF files
+          shopt -s nullglob
+          valid=(/tmp/octoscan-sarif/*.sarif)
+          shopt -u nullglob
+          if [ ${#valid[@]} -gt 0 ]; then
+            tmp_merged="$(mktemp /tmp/octoscan-merged.XXXXXX.sarif)"
+            if jq -s '. as $all | $all[0] as $base | $base | .runs[0].results = [$all[] | .runs[0]?.results[]?]' "${valid[@]}" > "$tmp_merged" \
+              && jq -e 'type == "object" and (.runs | type == "array")' "$tmp_merged" > /dev/null 2>&1; then
+              mv "$tmp_merged" reports/octoscan.sarif
+            else
+              rm -f "$tmp_merged"
+              echo "::warning::octoscan SARIF merge failed; skipping upload for this run."
+            fi
+          fi
+
+      - name: Upload octoscan SARIF
+        if: ${{ always() && hashFiles('reports/octoscan.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
+        with:
+          sarif_file: reports/octoscan.sarif
+          category: octoscan
+
+  poutine:
+    name: poutine
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install poutine
+        run: |
+          POUTINE_VERSION=$(curl -s https://api.github.com/repos/boostsecurityio/poutine/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          curl -sSfL -o /tmp/poutine.tar.gz \
+            "https://github.com/boostsecurityio/poutine/releases/download/v${POUTINE_VERSION}/poutine_Linux_x86_64.tar.gz"
+          tar -xzf /tmp/poutine.tar.gz -C /tmp
+          install -m 0755 /tmp/poutine /usr/local/bin/poutine
+          poutine version
+
+      - name: Run poutine
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports
+          poutine analyze_local . --format sarif > reports/poutine.sarif
+
+      - name: Sanitize poutine SARIF
+        if: ${{ always() && hashFiles('reports/poutine.sarif') != '' }}
+        run: |
+          # poutine emits invalid GUIDs in supportedTaxonomies; strip them to pass SARIF validation
+          jq '(.runs[]?.tool.driver.supportedTaxonomies // []) |= map(del(.guid))' \
+            reports/poutine.sarif > reports/poutine.sarif.tmp
+          mv reports/poutine.sarif.tmp reports/poutine.sarif
+
+      - name: Upload poutine SARIF
+        if: ${{ always() && hashFiles('reports/poutine.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
+        with:
+          sarif_file: reports/poutine.sarif
+          category: poutine

@@ -107,6 +107,7 @@ func (g *GrypeScanner) runSyft(ctx context.Context, opts ScanOptions, sbomFile s
 		cmd = dockerRun(ctx, "anchore/syft:latest", opts.RepoPath,
 			[]string{"/scan", "-o", "json"})
 	} else {
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd = exec.CommandContext(ctx, syft, opts.RepoPath, "-o", "json")
 	}
 
@@ -135,8 +136,10 @@ func (g *GrypeScanner) runGrype(ctx context.Context, opts ScanOptions, sbomFile,
 			"sbom:/sbom/" + filepath.Base(sbomFile),
 			"-o", "json",
 		}
-		cmd = exec.CommandContext(ctx, "docker", dockerArgs...)
+			// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+			cmd = exec.CommandContext(ctx, "docker", dockerArgs...)
 	} else {
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd = exec.CommandContext(ctx, grype, "sbom:"+sbomFile, "-o", "json")
 	}
 

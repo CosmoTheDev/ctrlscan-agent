@@ -1,0 +1,4 @@
+# Workflow hardening is covered by the dedicated Actions Security workflows.
+# Exclude workflow YAMLs from the product dogfooding scan to avoid duplicate
+# policy failures and keep self-scan focused on ctrlscan code/runtime behavior.
+.github/workflows/

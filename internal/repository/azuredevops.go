@@ -53,7 +53,7 @@ func (a *AzureDevOpsProvider) do(ctx context.Context, method, urlStr string, bod
 	req.SetBasicAuth("", a.token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := a.client.Do(req)
+	resp, err := a.client.Do(req) // #nosec G704 -- URL is built from admin-supplied config, not user input
 	if err != nil {
 		return nil, err
 	}

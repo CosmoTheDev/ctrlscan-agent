@@ -11,16 +11,21 @@ import (
 var gatewayUI embed.FS
 
 func (gw *Gateway) handleUIIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/ui" && r.URL.Path != "/ui/" {
+	path := r.URL.Path
+	if path != "/ui" && !strings.HasPrefix(path, "/ui/") {
 		http.NotFound(w, r)
 		return
 	}
+	// SPA fallback: serve index.html for deep links like /ui/scans or /ui/cronjobs.
+	// Static assets are handled by more specific routes above.
 	data, err := gatewayUI.ReadFile("ui/index.html")
 	if err != nil {
 		http.Error(w, "UI not available", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Embedded UI assets are static build-time files, not user-controlled template output.
+	// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 	_, _ = w.Write(data)
 }
 
@@ -44,5 +49,7 @@ func (gw *Gateway) handleUIAsset(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.Header().Set("Cache-Control", "no-cache")
+	// Embedded UI asset bytes are served as static files with an explicit content type.
+	// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 	_, _ = w.Write(data)
 }

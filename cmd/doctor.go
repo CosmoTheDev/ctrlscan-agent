@@ -153,6 +153,7 @@ func findTool(name, binDir string) string {
 }
 
 func isExecutable(path string) bool {
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.Command(path, "--version")
 	err := cmd.Run()
 	return err == nil

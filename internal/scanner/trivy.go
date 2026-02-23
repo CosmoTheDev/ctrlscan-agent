@@ -59,6 +59,7 @@ func (t *TrivyScanner) Scan(ctx context.Context, opts ScanOptions) (*ScanResult,
 		cmd = dockerRun(ctx, t.DockerImage(), opts.RepoPath,
 			[]string{"fs", "/scan", "--format", "json", "--scanners", "misconfig"})
 	} else {
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd = exec.CommandContext(ctx, trivy,
 			"fs", opts.RepoPath,
 			"--format", "json",

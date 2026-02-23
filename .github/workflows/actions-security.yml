@@ -99,7 +99,14 @@ jobs:
           valid=(/tmp/octoscan-sarif/*.sarif)
           shopt -u nullglob
           if [ ${#valid[@]} -gt 0 ]; then
-            jq -s '.[0] as $base | $base | .runs[0].results = [.[] | .runs[0]?.results[]?]' "${valid[@]}" > reports/octoscan.sarif
+            tmp_merged="$(mktemp /tmp/octoscan-merged.XXXXXX.sarif)"
+            if jq -s '. as $all | $all[0] as $base | $base | .runs[0].results = [$all[] | .runs[0]?.results[]?]' "${valid[@]}" > "$tmp_merged" \
+              && jq -e 'type == "object" and (.runs | type == "array")' "$tmp_merged" > /dev/null 2>&1; then
+              mv "$tmp_merged" reports/octoscan.sarif
+            else
+              rm -f "$tmp_merged"
+              echo "::warning::octoscan SARIF merge failed; skipping upload for this run."
+            fi
           fi
 
       - name: Upload octoscan SARIF

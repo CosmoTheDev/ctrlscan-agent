@@ -11,9 +11,9 @@ var jsonUnmarshal = json.Unmarshal
 // SASTFinding represents a static analysis finding (opengrep/semgrep).
 type SASTFinding struct {
 	ID          int64         `json:"id"           db:"id"`
-	UniqueKey   string        `json:"unique_key"   db:"unique_key"`   // provider:owner:repo:branch:check_id:fingerprint
+	UniqueKey   string        `json:"unique_key"   db:"unique_key"` // provider:owner:repo:branch:check_id:fingerprint
 	ScanJobID   int64         `json:"scan_job_id"  db:"scan_job_id"`
-	Scanner     string        `json:"scanner"      db:"scanner"`      // opengrep
+	Scanner     string        `json:"scanner"      db:"scanner"` // opengrep
 	CheckID     string        `json:"check_id"     db:"check_id"`
 	Severity    SeverityLevel `json:"severity"     db:"severity"`
 	FilePath    string        `json:"file_path"    db:"file_path"`
@@ -25,9 +25,9 @@ type SASTFinding struct {
 	Fingerprint string        `json:"fingerprint"  db:"fingerprint"`
 	Category    string        `json:"category"     db:"category"`
 	Confidence  string        `json:"confidence"   db:"confidence"`
-	CWEs        string        `json:"cwes"         db:"cwes"`         // JSON array
-	OWASP       string        `json:"owasp"        db:"owasp"`        // JSON array
-	Status      string        `json:"status"       db:"status"`       // open|fixed|ignored|pr_open|pr_merged
+	CWEs        string        `json:"cwes"         db:"cwes"`   // JSON array
+	OWASP       string        `json:"owasp"        db:"owasp"`  // JSON array
+	Status      string        `json:"status"       db:"status"` // open|fixed|ignored|pr_open|pr_merged
 	PRNumber    int           `json:"pr_number"    db:"pr_number"`
 	FirstSeenAt time.Time     `json:"first_seen_at" db:"first_seen_at"`
 	LastSeenAt  time.Time     `json:"last_seen_at"  db:"last_seen_at"`
@@ -36,18 +36,18 @@ type SASTFinding struct {
 // SecretsFinding represents a secret/credential detected by trufflehog.
 type SecretsFinding struct {
 	ID             int64         `json:"id"               db:"id"`
-	UniqueKey      string        `json:"unique_key"       db:"unique_key"`        // provider:owner:repo:branch:cred_hash:loc_hash
+	UniqueKey      string        `json:"unique_key"       db:"unique_key"` // provider:owner:repo:branch:cred_hash:loc_hash
 	ScanJobID      int64         `json:"scan_job_id"      db:"scan_job_id"`
 	DetectorName   string        `json:"detector_name"    db:"detector_name"`
 	DetectorType   string        `json:"detector_type"    db:"detector_type"`
 	Verified       bool          `json:"verified"         db:"verified"`
-	CredentialHash string        `json:"credential_hash"  db:"credential_hash"`   // hash only, never raw
+	CredentialHash string        `json:"credential_hash"  db:"credential_hash"` // hash only, never raw
 	LocationHash   string        `json:"location_hash"    db:"location_hash"`
 	FilePath       string        `json:"file_path"        db:"file_path"`
 	LineNumber     int           `json:"line_number"      db:"line_number"`
 	Severity       SeverityLevel `json:"severity"         db:"severity"`
-	RawMetadata    string        `json:"raw_metadata"     db:"raw_metadata"`      // redacted JSON
-	Status         string        `json:"status"           db:"status"`            // open|fixed|ignored|pr_open|pr_merged
+	RawMetadata    string        `json:"raw_metadata"     db:"raw_metadata"` // redacted JSON
+	Status         string        `json:"status"           db:"status"`       // open|fixed|ignored|pr_open|pr_merged
 	PRNumber       int           `json:"pr_number"        db:"pr_number"`
 	FirstSeenAt    time.Time     `json:"first_seen_at"    db:"first_seen_at"`
 	LastSeenAt     time.Time     `json:"last_seen_at"     db:"last_seen_at"`
@@ -58,7 +58,7 @@ type IaCFinding struct {
 	ID          int64         `json:"id"           db:"id"`
 	UniqueKey   string        `json:"unique_key"   db:"unique_key"`
 	ScanJobID   int64         `json:"scan_job_id"  db:"scan_job_id"`
-	Scanner     string        `json:"scanner"      db:"scanner"`    // trivy
+	Scanner     string        `json:"scanner"      db:"scanner"` // trivy
 	CheckID     string        `json:"check_id"     db:"check_id"`
 	Title       string        `json:"title"        db:"title"`
 	Description string        `json:"description"  db:"description"`
@@ -74,17 +74,20 @@ type IaCFinding struct {
 
 // FixQueue tracks AI-generated fixes awaiting PR creation.
 type FixQueue struct {
-	ID           int64      `json:"id"            db:"id"`
-	ScanJobID    int64      `json:"scan_job_id"   db:"scan_job_id"`
-	FindingType  string     `json:"finding_type"  db:"finding_type"`  // sca|sast|secrets|iac
-	FindingID    int64      `json:"finding_id"    db:"finding_id"`
-	FindingRef   string     `json:"finding_ref"   db:"finding_ref"`
-	Patch        string     `json:"patch"         db:"patch"`          // unified diff
-	PRTitle      string     `json:"pr_title"      db:"pr_title"`
-	PRBody       string     `json:"pr_body"       db:"pr_body"`
-	Status       string     `json:"status"        db:"status"`         // pending|approved|rejected|pr_open|pr_merged
-	PRNumber     int        `json:"pr_number"     db:"pr_number"`
-	PRURL        string     `json:"pr_url"        db:"pr_url"`
-	GeneratedAt  time.Time  `json:"generated_at"  db:"generated_at"`
-	ApprovedAt   *time.Time `json:"approved_at"   db:"approved_at"`
+	ID          int64      `json:"id"            db:"id"`
+	ScanJobID   int64      `json:"scan_job_id"   db:"scan_job_id"`
+	FindingType string     `json:"finding_type"  db:"finding_type"` // sca|sast|secrets|iac
+	FindingID   int64      `json:"finding_id"    db:"finding_id"`
+	FindingRef  string     `json:"finding_ref"   db:"finding_ref"`
+	AIProvider  string     `json:"ai_provider"   db:"ai_provider"`
+	AIModel     string     `json:"ai_model"      db:"ai_model"`
+	AIEndpoint  string     `json:"ai_endpoint"   db:"ai_endpoint"`
+	Patch       string     `json:"patch"         db:"patch"` // unified diff
+	PRTitle     string     `json:"pr_title"      db:"pr_title"`
+	PRBody      string     `json:"pr_body"       db:"pr_body"`
+	Status      string     `json:"status"        db:"status"` // pending|approved|rejected|pr_open|pr_merged
+	PRNumber    int        `json:"pr_number"     db:"pr_number"`
+	PRURL       string     `json:"pr_url"        db:"pr_url"`
+	GeneratedAt time.Time  `json:"generated_at"  db:"generated_at"`
+	ApprovedAt  *time.Time `json:"approved_at"   db:"approved_at"`
 }

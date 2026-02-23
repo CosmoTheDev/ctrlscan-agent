@@ -24,13 +24,15 @@ type DatabaseConfig struct {
 // AIConfig controls the AI provider used for triage and fix generation.
 type AIConfig struct {
 	// Provider is "openai" (default) or "ollama".
-	Provider    string `mapstructure:"provider"      json:"provider"`
-	OpenAIKey   string `mapstructure:"openai_api_key" json:"openai_api_key"`
-	Model       string `mapstructure:"model"          json:"model"`
+	Provider  string `mapstructure:"provider"       json:"provider"`
+	OpenAIKey string `mapstructure:"openai_api_key" json:"openai_api_key"`
+	Model     string `mapstructure:"model"          json:"model"`
 	// BaseURL overrides the API endpoint (useful for Azure OpenAI or proxies).
-	BaseURL     string `mapstructure:"base_url"       json:"base_url"`
+	BaseURL string `mapstructure:"base_url" json:"base_url"`
 	// OllamaURL is used when Provider == "ollama".
-	OllamaURL   string `mapstructure:"ollama_url"     json:"ollama_url"`
+	OllamaURL string `mapstructure:"ollama_url" json:"ollama_url"`
+	// OptimizeForLocal enables smaller prompts / chunking and stricter local timeouts.
+	OptimizeForLocal bool `mapstructure:"optimize_for_local" json:"optimize_for_local"`
 }
 
 // GitConfig holds credentials for each supported git hosting platform.
@@ -63,15 +65,15 @@ type AzureConfig struct {
 // AgentConfig controls the autonomous agent behaviour.
 type AgentConfig struct {
 	// Mode is "triage" (default), "semi", or "auto".
-	Mode    string `mapstructure:"mode"    json:"mode"`
+	Mode string `mapstructure:"mode"    json:"mode"`
 	// Workers is the number of parallel scan goroutines.
-	Workers int    `mapstructure:"workers" json:"workers"`
+	Workers int `mapstructure:"workers" json:"workers"`
 	// ScanTargets specifies discovery sources: own_repos, watchlist, cve_search, all.
 	ScanTargets []string `mapstructure:"scan_targets" json:"scan_targets"`
 	// Watchlist is a list of "owner/repo" or "owner" entries to monitor.
-	Watchlist   []string `mapstructure:"watchlist"    json:"watchlist"`
+	Watchlist []string `mapstructure:"watchlist"    json:"watchlist"`
 	// Scanners lists which tools to run.
-	Scanners    []string `mapstructure:"scanners"     json:"scanners"`
+	Scanners []string `mapstructure:"scanners"     json:"scanners"`
 }
 
 // GatewayConfig controls the persistent gateway daemon.
@@ -83,7 +85,7 @@ type GatewayConfig struct {
 // ToolsConfig controls where scanner binaries live.
 type ToolsConfig struct {
 	// BinDir is the directory where scanner tools are installed.
-	BinDir       string `mapstructure:"bin_dir"       json:"bin_dir"`
+	BinDir string `mapstructure:"bin_dir"       json:"bin_dir"`
 	// PreferDocker forces docker execution even when local binaries are present.
-	PreferDocker bool   `mapstructure:"prefer_docker" json:"prefer_docker"`
+	PreferDocker bool `mapstructure:"prefer_docker" json:"prefer_docker"`
 }

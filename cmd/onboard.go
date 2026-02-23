@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,6 +119,7 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	if aiProviderChoice == aiProviderLMStudio && cfg.AI.OpenAIKey != "" {
 		lmStudioAPIKey = cfg.AI.OpenAIKey
 	}
+	optimizeForLocal := cfg.AI.OptimizeForLocal
 
 	var aiModel string = "gpt-4o"
 	if cfg.AI.Model != "" {
@@ -202,6 +205,10 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 					Description("Leave blank for OpenAI cloud. Set this only for proxies/Azure-compatible endpoints.").
 					Placeholder("https://api.openai.com/v1").
 					Value(&openAIBaseURL),
+				huh.NewConfirm().
+					Title("Enable local-model optimizations?").
+					Description("Recommended for local OpenAI-compatible endpoints (smaller prompts, smaller triage batches).").
+					Value(&optimizeForLocal),
 			),
 		)
 		if err := aiForm.Run(); err != nil {
@@ -220,6 +227,7 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 			cfg.AI.OpenAIKey = strings.TrimSpace(openAIKey)
 			cfg.AI.Model = aiModel
 			cfg.AI.BaseURL = strings.TrimSpace(openAIBaseURL)
+			cfg.AI.OptimizeForLocal = optimizeForLocal && strings.TrimSpace(cfg.AI.BaseURL) != ""
 			reportAIProbe(ctx, cfg.AI, "OpenAI")
 			fmt.Println(successStyle.Render("  AI enabled — OpenAI configured for triage, fixes, and PR creation."))
 			fmt.Println()
@@ -227,6 +235,7 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 			cfg.AI.Provider = ""
 			cfg.AI.OpenAIKey = ""
 			cfg.AI.BaseURL = ""
+			cfg.AI.OptimizeForLocal = false
 			fmt.Println(dimStyle.Render("  Scan-only mode selected. Add AI later by re-running 'ctrlscan onboard'."))
 			fmt.Println()
 		}
@@ -288,6 +297,10 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 						Description("Only used if 'Custom model name…' is selected above.").
 						Placeholder("qwen2.5-coder:7b").
 						Value(&customAIModel),
+					huh.NewConfirm().
+						Title("Optimize for local/smaller models?").
+						Description("Recommended (one-finding triage batches, smaller code context, stricter Ollama timeout/retries).").
+						Value(&optimizeForLocal),
 				),
 			)
 			if err := ollamaModelForm.Run(); err != nil {
@@ -316,6 +329,10 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 						Description("Must match a model installed in Ollama (for example: llama3.2, qwen2.5-coder:7b).").
 						Placeholder("llama3.2").
 						Value(&aiModel),
+					huh.NewConfirm().
+						Title("Optimize for local/smaller models?").
+						Description("Recommended (one-finding triage batches, smaller code context, stricter Ollama timeout/retries).").
+						Value(&optimizeForLocal),
 				),
 			)
 			if err := ollamaModelInputForm.Run(); err != nil {
@@ -328,6 +345,7 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		cfg.AI.BaseURL = ""
 		cfg.AI.OllamaURL = ollamaURL
 		cfg.AI.Model = strings.TrimSpace(aiModel)
+		cfg.AI.OptimizeForLocal = optimizeForLocal
 		if cfg.AI.Model == "" {
 			cfg.AI.Model = "llama3.2"
 		}
@@ -354,6 +372,10 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 					Placeholder("lm-studio").
 					EchoMode(huh.EchoModePassword).
 					Value(&lmStudioAPIKey),
+				huh.NewConfirm().
+					Title("Optimize for local/smaller models?").
+					Description("Recommended (one-finding triage batches and smaller code context).").
+					Value(&optimizeForLocal),
 			),
 		)
 		if err := lmStudioForm.Run(); err != nil {
@@ -367,6 +389,7 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		cfg.AI.OpenAIKey = strings.TrimSpace(lmStudioAPIKey)
 		cfg.AI.BaseURL = strings.TrimSpace(lmStudioURL)
 		cfg.AI.Model = strings.TrimSpace(aiModel)
+		cfg.AI.OptimizeForLocal = optimizeForLocal
 		if cfg.AI.BaseURL == "" {
 			cfg.AI.BaseURL = "http://127.0.0.1:1234/v1"
 		}
@@ -378,6 +401,7 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		cfg.AI.Provider = ""
 		cfg.AI.OpenAIKey = ""
 		cfg.AI.BaseURL = ""
+		cfg.AI.OptimizeForLocal = false
 		fmt.Println(dimStyle.Render("  Scan-only mode selected. Add AI later by re-running 'ctrlscan onboard'."))
 		fmt.Println()
 	}
@@ -665,9 +689,9 @@ type ollamaTagsResponse struct {
 }
 
 func fetchOllamaModelNames(parent context.Context, baseURL string) ([]string, error) {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		baseURL = "http://localhost:11434"
+	baseURL, err := normalizeLocalOllamaBaseURL(baseURL)
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
@@ -677,6 +701,7 @@ func fetchOllamaModelNames(parent context.Context, baseURL string) ([]string, er
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G704 -- baseURL is restricted to localhost/loopback in normalizeLocalOllamaBaseURL.
 	resp, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
 	if err != nil {
 		return nil, err
@@ -711,6 +736,37 @@ func fetchOllamaModelNames(parent context.Context, baseURL string) ([]string, er
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+func normalizeLocalOllamaBaseURL(raw string) (string, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid Ollama URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid Ollama URL scheme %q (expected http or https)", u.Scheme)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return "", fmt.Errorf("invalid Ollama URL: missing host")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("invalid Ollama URL: credentials are not supported")
+	}
+
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return strings.TrimRight(u.String(), "/"), nil
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsLoopback() {
+		return strings.TrimRight(u.String(), "/"), nil
+	}
+
+	return "", fmt.Errorf("Ollama URL must point to localhost or a loopback address")
 }
 
 // installScannerTool downloads a scanner binary to binDir.

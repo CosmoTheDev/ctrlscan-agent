@@ -47,16 +47,16 @@ func (a *PRAgent) ProcessApprovedFixes(ctx context.Context) {
 
 func (a *PRAgent) drainApprovedFixes(ctx context.Context) {
 	type fixRow struct {
-		ID         int64   `db:"id"`
-		ScanJobID  int64   `db:"scan_job_id"`
+		ID          int64  `db:"id"`
+		ScanJobID   int64  `db:"scan_job_id"`
 		FindingType string `db:"finding_type"`
 		FindingID   int64  `db:"finding_id"`
-		Patch      string  `db:"patch"`
-		PRTitle    string  `db:"pr_title"`
-		PRBody     string  `db:"pr_body"`
-		Status     string  `db:"status"`
-		PRNumber   int     `db:"pr_number"`
-		PRURL      string  `db:"pr_url"`
+		Patch       string `db:"patch"`
+		PRTitle     string `db:"pr_title"`
+		PRBody      string `db:"pr_body"`
+		Status      string `db:"status"`
+		PRNumber    int    `db:"pr_number"`
+		PRURL       string `db:"pr_url"`
 	}
 	var rows []fixRow
 	if err := a.db.Select(ctx, &rows,
@@ -261,6 +261,9 @@ func gitPush(repoPath, branch, token, remoteURL string) error {
 func applyPatch(repoPath, patch string) error {
 	if strings.TrimSpace(patch) == "" {
 		return fmt.Errorf("empty patch")
+	}
+	if !looksLikeUnifiedDiffPatch(patch) {
+		return fmt.Errorf("invalid patch format (expected unified diff with ---/+++/@@ hunks)")
 	}
 	patchFile := filepath.Join(repoPath, ".ctrlscan.patch")
 	if err := os.WriteFile(patchFile, []byte(patch), 0o644); err != nil {

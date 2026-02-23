@@ -1,6 +1,5 @@
-// Circular import: openScanDetailPage is only called inside applyRouteFromLocation (a function body),
-// so ESM live bindings resolve correctly before any call happens.
-import { openScanDetailPage } from "./actions.js";
+// Circular imports are only used inside function bodies, so ESM live bindings are safe here.
+import { openScanDetailByLookup, openScanDetailPage } from "./actions.js";
 import { state } from "./state.js";
 import { escapeHtml, setHtml } from "./utils.js";
 
@@ -73,13 +72,26 @@ export function renderNav() {
       .filter((v) => !v.hidden)
       .map(
         (v) =>
-          `<button data-view="${v.id}" class="${state.view === v.id ? "active" : ""}">${escapeHtml(v.title)}</button>`
+          `<button data-view="${v.id}" class="${state.view === v.id ? "active" : ""} ${state.navPendingView === v.id ? "is-loading" : ""}">${escapeHtml(v.title)}</button>`
       )
       .join("")
   );
-  nav
-    .querySelectorAll("button")
-    .forEach((btn) => btn.addEventListener("click", () => setView(btn.dataset.view, { pushHistory: true })));
+  nav.querySelectorAll("button").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.view;
+      if (!target || target === state.view) {
+        setView(target || state.view, { pushHistory: true });
+        return;
+      }
+      state.navPendingView = target;
+      renderNav();
+      requestAnimationFrame(() => {
+        setView(target, { pushHistory: true });
+        state.navPendingView = "";
+        renderNav();
+      });
+    })
+  );
 }
 
 export async function applyRouteFromLocation() {
@@ -90,6 +102,23 @@ export async function applyRouteFromLocation() {
     return;
   }
   const section = parts[1] || "overview";
+  if (section === "scans" && parts[2] === "details") {
+    const q = new URLSearchParams(window.location.search || "");
+    const source = q.get("source") || q.get("provider") || "";
+    const repo = q.get("repo") || "";
+    const branch = q.get("branch") || "";
+    const commit = q.get("commit") || q.get("commit_sha") || "";
+    if (source && repo) {
+      try {
+        await openScanDetailByLookup({ source, repo, branch, commit }, { pushHistory: false });
+        return;
+      } catch (_) {
+        // fall through to scans page if lookup does not resolve
+      }
+    }
+    setView("scans");
+    return;
+  }
   if (section === "scans" && parts[2]) {
     const id = Number(parts[2]);
     if (Number.isFinite(id) && id > 0) {

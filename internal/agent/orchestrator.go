@@ -42,16 +42,21 @@ type OrchestratorOptions struct {
 
 // WorkerStatus reports what a background worker is doing right now.
 type WorkerStatus struct {
-	Name       string `json:"name"`
-	Kind       string `json:"kind"`
-	Status     string `json:"status"`
-	Action     string `json:"action"`
-	Repo       string `json:"repo,omitempty"`
-	ScanJobID  int64  `json:"scan_job_id,omitempty"`
-	CampaignID int64  `json:"campaign_id,omitempty"`
-	TaskID     int64  `json:"task_id,omitempty"`
-	Message    string `json:"message,omitempty"`
-	UpdatedAt  string `json:"updated_at"`
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	Status          string `json:"status"`
+	Action          string `json:"action"`
+	Repo            string `json:"repo,omitempty"`
+	ScanJobID       int64  `json:"scan_job_id,omitempty"`
+	CampaignID      int64  `json:"campaign_id,omitempty"`
+	TaskID          int64  `json:"task_id,omitempty"`
+	Message         string `json:"message,omitempty"`
+	ProgressPhase   string `json:"progress_phase,omitempty"`
+	ProgressCurrent int    `json:"progress_current,omitempty"`
+	ProgressTotal   int    `json:"progress_total,omitempty"`
+	ProgressPercent int    `json:"progress_percent,omitempty"`
+	ProgressNote    string `json:"progress_note,omitempty"`
+	UpdatedAt       string `json:"updated_at"`
 }
 
 // TriggerRequest optionally overrides scan settings for the next sweep only.
@@ -59,6 +64,8 @@ type TriggerRequest struct {
 	ScanTargets   []string
 	Workers       int
 	SelectedRepos []SelectedRepo
+	ForceScan     bool
+	Mode          string
 }
 
 // SelectedRepo identifies a repo chosen from gateway preview for a one-shot sweep.
@@ -108,6 +115,8 @@ func (o *Orchestrator) TriggerWithRequest(req *TriggerRequest) {
 		if req.SelectedRepos != nil {
 			cp.SelectedRepos = append([]SelectedRepo(nil), req.SelectedRepos...)
 		}
+		cp.ForceScan = req.ForceScan
+		cp.Mode = req.Mode
 		o.pendingTrigger = &cp
 		o.mu.Unlock()
 	}
@@ -244,6 +253,16 @@ func (o *Orchestrator) runRemediationLoop(ctx context.Context, aiProv ai.AIProvi
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	workerName := "remediation-0"
+	// Recover tasks that were mid-flight when the gateway exited. They keep
+	// their persisted AI progress pointer and will be re-processed safely.
+	_ = o.db.Exec(ctx, `UPDATE remediation_tasks
+		SET status = 'pending',
+		    worker_name = '',
+		    error_msg = CASE
+		        WHEN status = 'running' AND error_msg = '' THEN 'requeued after restart'
+		        ELSE error_msg
+		    END
+		WHERE status = 'running'`)
 	o.setWorkerStatus(WorkerStatus{Name: workerName, Kind: "remediation", Status: "waiting", Action: "waiting for campaigns"})
 	for {
 		select {
@@ -282,7 +301,7 @@ func (o *Orchestrator) runSweep(
 	skippedByReason := map[string]int{}
 	var skippedTotal int
 	var skipMu sync.Mutex
-	if req != nil && (req.Workers > 0 || len(req.ScanTargets) > 0) {
+	if req != nil && (req.Workers > 0 || len(req.ScanTargets) > 0 || strings.TrimSpace(req.Mode) != "") {
 		cfgCopy := *o.cfg
 		if req.Workers > 0 {
 			cfgCopy.Agent.Workers = req.Workers
@@ -290,10 +309,14 @@ func (o *Orchestrator) runSweep(
 		if len(req.ScanTargets) > 0 {
 			cfgCopy.Agent.ScanTargets = append([]string(nil), req.ScanTargets...)
 		}
+		if strings.TrimSpace(req.Mode) != "" {
+			cfgCopy.Agent.Mode = strings.TrimSpace(req.Mode)
+		}
 		effectiveCfg = &cfgCopy
 		slog.Info("Orchestrator applying one-shot trigger overrides",
 			"workers", effectiveCfg.Agent.Workers,
 			"targets", effectiveCfg.Agent.ScanTargets,
+			"mode", effectiveCfg.Agent.Mode,
 		)
 	}
 
@@ -315,6 +338,12 @@ func (o *Orchestrator) runSweep(
 			}
 			if len(req.SelectedRepos) > 0 {
 				payload["selected_repos"] = len(req.SelectedRepos)
+			}
+			if req.ForceScan {
+				payload["force_scan"] = true
+			}
+			if strings.TrimSpace(req.Mode) != "" {
+				payload["mode"] = strings.TrimSpace(req.Mode)
 			}
 		}
 		o.opts.OnSweepStarted(payload)
@@ -342,7 +371,8 @@ func (o *Orchestrator) runSweep(
 		scanWg.Add(1)
 		go func(workerID int) {
 			defer scanWg.Done()
-			sa := NewScannerAgent(workerID, effectiveCfg, o.db, scannerList, func(payload map[string]any) {
+			forceScan := req != nil && req.ForceScan
+			sa := NewScannerAgent(workerID, effectiveCfg, o.db, scannerList, forceScan, func(payload map[string]any) {
 				reason := ""
 				if v, ok := payload["reason"].(string); ok {
 					reason = v
@@ -535,16 +565,21 @@ func (o *Orchestrator) setWorkerStatus(ws WorkerStatus) {
 	o.workerStates[ws.Name] = ws
 	if o.opts.OnWorkerStatus != nil {
 		payload := map[string]any{
-			"name":        ws.Name,
-			"kind":        ws.Kind,
-			"status":      ws.Status,
-			"action":      ws.Action,
-			"repo":        ws.Repo,
-			"scan_job_id": ws.ScanJobID,
-			"campaign_id": ws.CampaignID,
-			"task_id":     ws.TaskID,
-			"message":     ws.Message,
-			"updated_at":  ws.UpdatedAt,
+			"name":             ws.Name,
+			"kind":             ws.Kind,
+			"status":           ws.Status,
+			"action":           ws.Action,
+			"repo":             ws.Repo,
+			"scan_job_id":      ws.ScanJobID,
+			"campaign_id":      ws.CampaignID,
+			"task_id":          ws.TaskID,
+			"message":          ws.Message,
+			"progress_phase":   ws.ProgressPhase,
+			"progress_current": ws.ProgressCurrent,
+			"progress_total":   ws.ProgressTotal,
+			"progress_percent": ws.ProgressPercent,
+			"progress_note":    ws.ProgressNote,
+			"updated_at":       ws.UpdatedAt,
 		}
 		o.opts.OnWorkerStatus(payload)
 	}
@@ -643,14 +678,55 @@ func (o *Orchestrator) processOneRemediationTask(ctx context.Context, aiProv ai.
 	defer cm.Cleanup(cloneResult)
 
 	fixer := NewFixerAgent(&cfgCopy, o.db, aiProv)
+	fixer.progressNotify = func(ev remediationProgressEvent) {
+		action := "generating fixes"
+		if ev.PhaseLabel != "" {
+			action = ev.PhaseLabel
+		}
+		if ev.Total > 0 {
+			action = fmt.Sprintf("%s (%d/%d, %d%%)", action, ev.Current, ev.Total, ev.Percent)
+		} else if ev.Percent > 0 {
+			action = fmt.Sprintf("%s (%d%%)", action, ev.Percent)
+		}
+		o.setWorkerStatus(WorkerStatus{
+			Name:            workerName,
+			Kind:            "remediation",
+			Status:          "running",
+			Action:          action,
+			Repo:            repoFull,
+			ScanJobID:       task.ScanJobID,
+			CampaignID:      task.CampaignID,
+			TaskID:          task.ID,
+			ProgressPhase:   ev.Phase,
+			ProgressCurrent: ev.Current,
+			ProgressTotal:   ev.Total,
+			ProgressPercent: ev.Percent,
+			ProgressNote:    ev.Note,
+		})
+		o.emitRemediationEvent("campaign.task.progress", map[string]any{
+			"campaign_id": task.CampaignID,
+			"task_id":     task.ID,
+			"scan_job_id": task.ScanJobID,
+			"repo":        repoFull,
+			"phase":       ev.Phase,
+			"phase_label": ev.PhaseLabel,
+			"current":     ev.Current,
+			"total":       ev.Total,
+			"percent":     ev.Percent,
+			"note":        ev.Note,
+			"finding_id":  ev.FindingID,
+		})
+	}
 	before := countFixQueueForScanJob(ctx, o.db, task.ScanJobID)
 	if err := fixer.processFixJob(ctx, fixJob{
 		ScanJobID:         task.ScanJobID,
 		RemediationTaskID: task.ID,
+		WorkerName:        workerName,
 		Provider:          task.Provider,
 		Owner:             task.Owner,
 		Repo:              task.Repo,
 		Branch:            cloneResult.Branch,
+		Commit:            cloneResult.Commit,
 		RepoPath:          cloneResult.LocalPath,
 	}); err != nil {
 		msg := fmt.Sprintf("processing remediation task: %v", err)
@@ -756,10 +832,12 @@ type repoJob struct {
 type fixJob struct {
 	ScanJobID         int64
 	RemediationTaskID int64
+	WorkerName        string
 	Provider          string
 	Owner             string
 	Repo              string
 	Branch            string
+	Commit            string
 	RepoPath          string // still-live clone for context reading
 	CleanupFn         func() // call when done with repoPath
 }

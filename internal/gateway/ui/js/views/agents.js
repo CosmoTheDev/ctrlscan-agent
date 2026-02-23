@@ -5,6 +5,22 @@ import { openTriggerModal } from "../modals.js";
 import { state } from "../state.js";
 import { escapeHtml, fmtDate, setHtml, statusClass } from "../utils.js";
 
+function fmtWorkerProgress(w) {
+  const pct = Number(w?.progress_percent || 0);
+  const current = Number(w?.progress_current || 0);
+  const total = Number(w?.progress_total || 0);
+  const phase = String(w?.progress_phase || "").trim();
+  const note = String(w?.progress_note || "").trim();
+  const parts = [];
+  if (phase) parts.push(phase);
+  if (total > 0) parts.push(`${current}/${total}`);
+  if (pct > 0 || total > 0) parts.push(`${pct}%`);
+  let label = parts.join(" • ");
+  if (!label) label = "-";
+  if (note) label += ` — ${note}`;
+  return label;
+}
+
 export function renderAgents() {
   const root = document.getElementById("view-agents");
   const st = state.status || {};
@@ -45,7 +61,7 @@ export function renderAgents() {
       <div class="footer-note">Shows current PR and remediation worker actions in the orchestrator. Scan workers are represented by scan jobs/sweep status above.</div>
       <div class="table-wrap" style="margin-top:10px">
         <table>
-          <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Action</th><th>Repo</th><th>Campaign</th><th>Task</th><th>Updated</th></tr></thead>
+          <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Action</th><th>Progress</th><th>Repo</th><th>Campaign</th><th>Task</th><th>Updated</th></tr></thead>
           <tbody>
             ${
               workers
@@ -55,13 +71,14 @@ export function renderAgents() {
               <td>${escapeHtml(w.kind)}</td>
               <td><span class="${statusClass(w.status)}">${escapeHtml(w.status)}</span></td>
               <td>${escapeHtml(w.action || "")}</td>
+              <td class="muted">${escapeHtml(fmtWorkerProgress(w))}</td>
               <td>${escapeHtml(w.repo || "")}</td>
               <td>${w.campaign_id ? `#${w.campaign_id}` : `<span class="muted">-</span>`}</td>
               <td>${w.task_id ? `#${w.task_id}` : `<span class="muted">-</span>`}</td>
               <td>${escapeHtml(fmtDate(w.updated_at))}</td>
             </tr>`
                 )
-                .join("") || `<tr><td colspan="8" class="muted">No background worker activity yet.</td></tr>`
+                .join("") || `<tr><td colspan="9" class="muted">No background worker activity yet.</td></tr>`
             }
           </tbody>
         </table>

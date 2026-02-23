@@ -13,6 +13,8 @@ import { renderSweepSummaryCard } from "./overview.js";
 
 export function renderScans() {
   const root = document.getElementById("view-scans");
+  const scansLoading = !!state.scansLoading;
+  const scansActionBusy = String(state.scansActionBusy || "");
   const rows = state.jobs || [];
   const pageSize = state.scansPageSize || 20;
   const totalRows = Number(state.jobsTotal || rows.length || 0);
@@ -26,6 +28,7 @@ export function renderScans() {
   const visibleSelectedCount = visibleRows.filter((j) => selectedIds[j.id]).length;
   const allVisibleSelected = visibleRows.length > 0 && visibleSelectedCount === visibleRows.length;
   const selectedJob = state.selectedJob;
+  const selectedJobLoading = !!state.selectedJobLoading;
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
   const scanWorkers = (state.agentWorkers || []).filter((w) => String(w?.kind || "").toLowerCase() === "scan");
@@ -73,9 +76,9 @@ export function renderScans() {
       <div class="split">
       <div class="card">
         <div class="toolbar">
-          <button id="scansRefresh" class="btn btn-secondary">Refresh Jobs</button>
-          <button id="scansDeleteSelected" class="btn btn-danger" ${selectedCount === 0 ? "disabled" : ""}>Delete Selected (${selectedCount})</button>
-          <button id="scansDeleteAll" class="btn btn-danger" ${totalRows === 0 ? "disabled" : ""}>Delete All</button>
+          <button id="scansRefresh" class="btn btn-secondary ${scansLoading ? "is-loading" : ""}" ${scansLoading || scansActionBusy !== "" ? "disabled" : ""}>Refresh Jobs</button>
+          <button id="scansDeleteSelected" class="btn btn-danger ${scansActionBusy === "delete-selected" ? "is-loading" : ""}" ${selectedCount === 0 || scansActionBusy !== "" ? "disabled" : ""}>Delete Selected (${selectedCount})</button>
+          <button id="scansDeleteAll" class="btn btn-danger ${scansActionBusy === "delete-all" ? "is-loading" : ""}" ${totalRows === 0 || scansActionBusy !== "" ? "disabled" : ""}>Delete All</button>
           <span class="muted">Page ${page} of ${totalPages} • Showing ${totalRows === 0 ? 0 : pageStart + 1}-${Math.min(pageStart + pageSize, totalRows)} of ${totalRows}</span>
           <button id="scansPrevPage" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
           <button id="scansNextPage" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
@@ -93,7 +96,22 @@ export function renderScans() {
             </thead>
             <tbody>
               ${
-                visibleRows
+                scansLoading && visibleRows.length === 0
+                  ? new Array(6)
+                      .fill(0)
+                      .map(
+                        () => `<tr class="skeleton-table">
+                  <td><span class="skeleton-block" style="width:14px;height:14px"></span></td>
+                  <td><span class="skeleton-block" style="width:42px"></span></td>
+                  <td><span class="skeleton-block" style="width:160px"></span></td>
+                  <td><span class="skeleton-block" style="width:80px"></span></td>
+                  <td><span class="skeleton-block" style="width:120px"></span></td>
+                  <td><span class="skeleton-block" style="width:90px"></span></td>
+                  <td><span class="skeleton-block" style="width:70px"></span></td>
+                </tr>`
+                      )
+                      .join("")
+                  : visibleRows
                   .map(
                     (j) => `
                 <tr data-job-id="${j.id}" style="cursor:pointer; ${state.selectedJobId === j.id ? "background:rgba(79,140,255,.08)" : ""}">
@@ -103,7 +121,7 @@ export function renderScans() {
                   <td><span class="${statusClass(j.status)}">${escapeHtml(j.status)}</span></td>
                   <td>${escapeHtml(fmtDate(j.started_at))}</td>
                   <td>${j.findings_critical}/${j.findings_high}/${j.findings_medium}/${j.findings_low}</td>
-                  <td class="row-actions"><button class="btn btn-danger" data-job-delete="${j.id}">Delete</button></td>
+                  <td class="row-actions"><button class="btn btn-danger ${scansActionBusy === `delete:${j.id}` ? "is-loading" : ""}" data-job-delete="${j.id}" ${scansActionBusy !== "" ? "disabled" : ""}>Delete</button></td>
                 </tr>
               `
                   )
@@ -117,7 +135,23 @@ export function renderScans() {
       <div class="card">
         <h3>Job Detail ${selectedJob ? `#${selectedJob.id}` : ""}</h3>
         ${
-          selectedJob
+          selectedJobLoading
+            ? `
+          <div class="stack">
+            <div class="skeleton-block" style="width:220px;height:14px"></div>
+            <div class="skeleton-block" style="width:320px;height:12px"></div>
+            <div class="table-wrap">
+              <table><tbody>
+                ${new Array(4)
+                  .fill(0)
+                  .map(
+                    () => `<tr class="skeleton-table"><td><span class="skeleton-block" style="width:100%"></span></td></tr>`
+                  )
+                  .join("")}
+              </tbody></table>
+            </div>
+          </div>`
+            : selectedJob
             ? `
           <div class="stack">
             <div><strong>${escapeHtml(selectedJob.owner)}/${escapeHtml(selectedJob.repo)}</strong> <span class="badge ${statusClass(selectedJob.status)}">${escapeHtml(selectedJob.status)}</span></div>

@@ -121,6 +121,7 @@ func setDefaults(v *viper.Viper, home string) {
 	v.SetDefault("ai.model", "gpt-4o")
 	v.SetDefault("ai.base_url", "")
 	v.SetDefault("ai.ollama_url", "http://localhost:11434")
+	v.SetDefault("ai.optimize_for_local", false)
 
 	v.SetDefault("agent.mode", "triage")
 	v.SetDefault("agent.workers", 3)

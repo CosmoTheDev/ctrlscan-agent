@@ -29,6 +29,9 @@ export function wireNoticeModal() {
   });
 }
 
+let triggerModalMode = "sweep";
+let triggerPickerResolve = null;
+
 /* ---- Confirm Modal ---- */
 
 let confirmModalResolve = null;
@@ -252,8 +255,34 @@ function getPreviewSampleRepos() {
   return repos;
 }
 
+function repoMatchesPreviewSearch(repo, rawSearch) {
+  const q = String(rawSearch || "").trim().toLowerCase();
+  if (!q) return true;
+  const hay = [
+    repo.full_name,
+    repo.owner,
+    repo.name,
+    repo.provider,
+    repo.host,
+    repo.language,
+  ]
+    .map((v) => String(v || "").toLowerCase())
+    .join(" ");
+  return hay.includes(q);
+}
+
 function getSelectedPreviewRepos() {
   return Object.values(state.triggerPlan.selectedRepoMap || {});
+}
+
+function syncTriggerSubmitButton() {
+  const btn = document.getElementById("triggerModalSubmit");
+  if (!btn) return;
+  const busy = !!state.triggerSubmitBusy;
+  const baseLabel = triggerModalMode === "cron-picker" ? "Use Selected Repos" : "Start Sweep";
+  btn.disabled = busy;
+  btn.classList.toggle("is-loading", busy);
+  btn.textContent = busy ? (triggerModalMode === "cron-picker" ? "Applying" : "Starting") : baseLabel;
 }
 
 function reconcileSelectedPreviewRepos() {
@@ -306,7 +335,10 @@ export function renderTriggerPreview() {
   const root = document.getElementById("triggerPreviewBody");
   if (!root) return;
   if (state.triggerPreview.loading) {
-    setHtml(root, `<div class="muted">Loading preview…</div>`);
+    setHtml(
+      root,
+      `<div class="preview-loading"><div class="spinner-row"><span class="spinner-dot spinner-dot-accent" aria-hidden="true"></span><span>Loading preview…</span></div></div>`
+    );
     return;
   }
   if (state.triggerPlan.targets.length === 0) {
@@ -325,18 +357,22 @@ export function renderTriggerPreview() {
     setHtml(root, `<div class="muted">Preview unavailable.</div>`);
     return;
   }
-  const previewRepos = getPreviewSampleRepos();
+  const previewRepos = getPreviewSampleRepos().filter((r) => repoMatchesPreviewSearch(r, state.triggerPreview.search));
   const selectedCount = getSelectedPreviewRepos().length;
+  const searchValue = state.triggerPreview.search || "";
+  const currentLimit = Number(state.triggerPreview.limit || 10);
+  const canShowMore = currentLimit < 50;
   const sectionsHtml = data.targets
     .map(
-      (t) => `
+      (t) => {
+        const targetRepos = (t.samples || []).filter((r) => repoMatchesPreviewSearch(r, searchValue));
+        return `
     <div class="preview-section">
       <h4>${escapeHtml(targetMeta[t.target]?.label || t.target)}</h4>
-      <div class="preview-meta">${t.repo_count || 0} repositories visible${t.samples && t.samples.length < (t.repo_count || 0) ? ` (showing ${t.samples.length})` : ""}</div>
+      <div class="preview-meta">${t.repo_count || 0} repositories visible${t.samples && t.samples.length < (t.repo_count || 0) ? ` (showing ${t.samples.length})` : ""}${searchValue ? ` • filtered to ${targetRepos.length}` : ""}</div>
       <div class="preview-list">
         ${
-          (t.samples || [])
-            .slice(0, 12)
+          targetRepos
             .map(
               (r) => `
           <label class="preview-item preview-item-selectable">
@@ -348,18 +384,21 @@ export function renderTriggerPreview() {
           </label>
         `
             )
-            .join("") || `<div class="muted">No repositories matched this target.</div>`
+            .join("") || `<div class="muted">${searchValue ? "No repositories matched this filter." : "No repositories matched this target."}</div>`
         }
       </div>
       ${t.errors?.length ? `<div class="preview-errors">${escapeHtml(t.errors.join(" | "))}</div>` : ""}
     </div>
-  `
+  `;
+      }
     )
     .join("");
   const toolbarHtml = `
     <div class="toolbar preview-toolbar">
       <button id="previewReposSelectAll" class="btn btn-secondary" ${previewRepos.length === 0 ? "disabled" : ""}>Select All Shown</button>
       <button id="previewReposSelectNone" class="btn btn-secondary" ${selectedCount === 0 ? "disabled" : ""}>Select None</button>
+      <input id="previewRepoSearch" placeholder="Search repos" value="${escapeHtml(searchValue)}" style="max-width:220px">
+      <button id="previewShowMore" class="btn btn-secondary" ${canShowMore ? "" : "disabled"}>Show More</button>
       <span class="muted">${selectedCount} repo${selectedCount === 1 ? "" : "s"} selected${previewRepos.length ? ` (from ${previewRepos.length} shown)` : ""}. If any are selected, this trigger scans only those repos.</span>
     </div>
   `;
@@ -397,6 +436,17 @@ export function renderTriggerPreview() {
     state.triggerPlan.selectedRepoMap = {};
     renderTriggerPreview();
   });
+  root.querySelector("#previewRepoSearch")?.addEventListener("input", (e) => {
+    state.triggerPreview.search = e.target.value || "";
+    renderTriggerPreview();
+  });
+  root.querySelector("#previewShowMore")?.addEventListener("click", () => {
+    const current = Number(state.triggerPreview.limit || 10);
+    const next = current < 10 ? 10 : current < 25 ? 25 : 50;
+    if (next === current) return;
+    state.triggerPreview.limit = next;
+    fetchTriggerPreview();
+  });
 }
 
 export async function fetchTriggerPreview() {
@@ -408,7 +458,7 @@ export async function fetchTriggerPreview() {
   try {
     state.triggerPreview.data = await api("/api/agent/preview", {
       method: "POST",
-      body: JSON.stringify({ scan_targets: state.triggerPlan.targets, limit: 10 }),
+      body: JSON.stringify({ scan_targets: state.triggerPlan.targets, limit: Number(state.triggerPreview.limit || 10) }),
     });
     reconcileSelectedPreviewRepos();
   } catch (err) {
@@ -420,19 +470,75 @@ export async function fetchTriggerPreview() {
 }
 
 export function openTriggerModal() {
+  triggerModalMode = "sweep";
+  triggerPickerResolve = null;
   state.triggerPlan.targets = getDefaultTriggerTargets();
   state.triggerPlan.workers = "";
   state.triggerPlan.selectedRepoMap = {};
-  state.triggerPreview = { loading: false, data: null, error: "" };
+  state.triggerPlan.forceScan = false;
+  state.triggerPreview = { loading: false, data: null, error: "", limit: 10, search: "" };
   document.getElementById("triggerWorkers").value = "";
+  document.getElementById("triggerForceScan").checked = false;
+  document.getElementById("triggerModalTitle").textContent = "Trigger Scan Sweep";
+  document.querySelector("#triggerModal .modal-header p").textContent =
+    "Choose which discovery targets to scan for this run and optionally override worker concurrency.";
+  document.getElementById("triggerModalSubmit").textContent = "Start Sweep";
+  document.getElementById("triggerWorkersWrap").classList.remove("hidden");
+  document.getElementById("triggerForceWrap").classList.remove("hidden");
+  state.triggerSubmitBusy = false;
   renderTriggerChecklist();
   renderTriggerPreview();
+  syncTriggerSubmitButton();
   document.getElementById("triggerModal").classList.remove("hidden");
   fetchTriggerPreview();
 }
 
+export function openCronRepoPicker({ targets = [], selectedRepos = [] } = {}) {
+  triggerModalMode = "cron-picker";
+  state.triggerPlan.targets =
+    Array.isArray(targets) && targets.length > 0 ? [...targets] : getDefaultTriggerTargets();
+  state.triggerPlan.workers = "";
+  state.triggerPlan.selectedRepoMap = {};
+  for (const r of Array.isArray(selectedRepos) ? selectedRepos : []) {
+    const key = repoSelectionKey(r);
+    state.triggerPlan.selectedRepoMap[key] = {
+      provider: r.provider || "",
+      host: r.host || "",
+      owner: r.owner || "",
+      name: r.name || "",
+    };
+  }
+  state.triggerPlan.forceScan = false;
+  state.triggerPreview = { loading: false, data: null, error: "", limit: 10, search: "" };
+  document.getElementById("triggerWorkers").value = "";
+  document.getElementById("triggerForceScan").checked = false;
+  document.getElementById("triggerModalTitle").textContent = "Browse Repositories For Cron";
+  document.querySelector("#triggerModal .modal-header p").textContent =
+    "Pick scan targets, preview repositories, and select the exact repos this cron should scan.";
+  document.getElementById("triggerModalSubmit").textContent = "Use Selected Repos";
+  document.getElementById("triggerWorkersWrap").classList.add("hidden");
+  document.getElementById("triggerForceWrap").classList.add("hidden");
+  state.triggerSubmitBusy = false;
+  renderTriggerChecklist();
+  renderTriggerPreview();
+  syncTriggerSubmitButton();
+  document.getElementById("triggerModal").classList.remove("hidden");
+  fetchTriggerPreview();
+  return new Promise((resolve) => {
+    triggerPickerResolve = resolve;
+  });
+}
+
 export function closeTriggerModal() {
   document.getElementById("triggerModal").classList.add("hidden");
+  state.triggerSubmitBusy = false;
+  syncTriggerSubmitButton();
+  if (triggerModalMode === "cron-picker" && triggerPickerResolve) {
+    const resolve = triggerPickerResolve;
+    triggerPickerResolve = null;
+    resolve(null);
+  }
+  triggerModalMode = "sweep";
 }
 
 export function wireTriggerModal() {
@@ -450,8 +556,23 @@ export function wireTriggerModal() {
     renderTriggerPreview();
   });
   document.getElementById("triggerModalSubmit").addEventListener("click", async () => {
+    if (state.triggerSubmitBusy) return;
     const workersRaw = document.getElementById("triggerWorkers").value.trim();
+    const forceScan = !!document.getElementById("triggerForceScan")?.checked;
     const selectedRepos = getSelectedPreviewRepos();
+    if (triggerModalMode === "cron-picker") {
+      if (selectedRepos.length === 0) {
+        showNotice("No Repositories Selected", "Select one or more repositories from the preview list.");
+        return;
+      }
+      if (triggerPickerResolve) {
+        const resolve = triggerPickerResolve;
+        triggerPickerResolve = null;
+        resolve({ targets: [...state.triggerPlan.targets], selectedRepos });
+      }
+      closeTriggerModal();
+      return;
+    }
     if (state.triggerPlan.targets.length === 0 && selectedRepos.length === 0) {
       showNotice("Nothing Selected", "Select at least one scan target or choose one or more preview repos.");
       return;
@@ -463,11 +584,21 @@ export function wireTriggerModal() {
         return;
       }
     }
-    await triggerSweepWithOptions({
-      scanTargets: state.triggerPlan.targets,
-      workers: workersRaw === "" ? 0 : Number(workersRaw),
-      selectedRepos,
-    });
+    state.triggerSubmitBusy = true;
+    syncTriggerSubmitButton();
+    try {
+      await triggerSweepWithOptions({
+        scanTargets: state.triggerPlan.targets,
+        workers: workersRaw === "" ? 0 : Number(workersRaw),
+        selectedRepos,
+        forceScan,
+      });
+    } finally {
+      if (!document.getElementById("triggerModal").classList.contains("hidden")) {
+        state.triggerSubmitBusy = false;
+        syncTriggerSubmitButton();
+      }
+    }
   });
   document.getElementById("triggerModal").addEventListener("click", (e) => {
     if (e.target.id === "triggerModal") closeTriggerModal();

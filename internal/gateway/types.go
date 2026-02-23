@@ -2,14 +2,20 @@ package gateway
 
 // Schedule is a persisted cron entry that triggers the agent orchestrator.
 type Schedule struct {
-	ID          int64   `db:"id"          json:"id"`
-	Name        string  `db:"name"        json:"name"`
-	Description string  `db:"description" json:"description"`
+	ID          int64  `db:"id"          json:"id"`
+	Name        string `db:"name"        json:"name"`
+	Description string `db:"description" json:"description"`
 	// Expr is a cron expression ("0 2 * * *"), "@every 6h", "@hourly", or "@daily".
-	Expr    string `db:"expr"    json:"expr"`
+	Expr string `db:"expr"    json:"expr"`
 	// Targets is a JSON array that overrides agent.scan_targets for this schedule.
 	// Empty array means use the configured defaults.
 	Targets string `db:"targets" json:"targets"`
+	// SelectedRepos is a JSON array of explicit repos for one-shot scheduled sweeps.
+	// When non-empty, discovery is skipped and only these repos are scanned.
+	SelectedRepos string `db:"selected_repos" json:"selected_repos"`
+	// ScopeJSON is the typed schedule scope (targets/mode/owners/prefixes/repos).
+	// Empty means fall back to legacy targets/selected_repos/mode fields.
+	ScopeJSON string `db:"scope_json" json:"scope_json"`
 	// Mode overrides agent.mode when non-empty ("triage", "semi", "auto").
 	Mode      string  `db:"mode"        json:"mode"`
 	Enabled   bool    `db:"enabled"     json:"enabled"`

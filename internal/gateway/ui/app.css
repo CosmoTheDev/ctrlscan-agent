@@ -216,6 +216,20 @@ body { min-height: 100vh; min-height: 100dvh; overflow: hidden; }
   background: var(--nav-hover-bg);
   color: var(--text);
 }
+.nav button.is-loading { position: relative; padding-right: 28px; }
+.nav button.is-loading::after {
+  content: "";
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.18);
+  border-top-color: rgba(15,122,248,.9);
+  animation: spin .75s linear infinite;
+}
 
 /* --- Sidebar Footer --- */
 .sidebar-footer { margin-top: auto; padding: 6px 2px; display: flex; flex-direction: column; gap: 6px; }
@@ -321,6 +335,29 @@ body { min-height: 100vh; min-height: 100dvh; overflow: hidden; }
 .view { display: none; min-height: 0; }
 .view.active { display: block; flex: 1; min-height: 0; overflow: auto; padding-right: 4px; }
 
+.global-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  pointer-events: none;
+  background: rgba(0,0,0,.14);
+  display: grid;
+  place-items: center;
+  backdrop-filter: blur(1px);
+}
+.global-loading-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-md);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 8px 28px rgba(0,0,0,.24);
+  font-size: 13px;
+}
+
 /* --- Grid --- */
 .grid { display: grid; gap: 12px; }
 .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -335,6 +372,31 @@ body { min-height: 100vh; min-height: 100dvh; overflow: hidden; }
   padding: 14px 16px;
 }
 .card h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--text); }
+.card.is-loading {
+  position: relative;
+  overflow: hidden;
+}
+.card.is-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.03), transparent);
+  transform: translateX(-100%);
+  animation: skeleton-shimmer 1.15s linear infinite;
+  pointer-events: none;
+}
+@keyframes skeleton-shimmer { to { transform: translateX(100%); } }
+.skeleton-block {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: rgba(255,255,255,.06);
+}
+[data-theme="light"] .skeleton-block {
+  background: rgba(0,0,0,.06);
+}
+.skeleton-table td { padding-top: 12px; padding-bottom: 12px; }
+.skeleton-table .skeleton-block { height: 10px; }
 
 /* Colored left-border accent cards */
 .card.card-ok       { border-left: 3px solid var(--s-ok);    padding-left: 13px; }
@@ -547,6 +609,7 @@ textarea.code-edit:focus { outline: none; border-color: var(--in-focus-bd); }
   backdrop-filter: blur(2px);
 }
 .modal-backdrop.hidden { display: none; }
+.hidden { display: none !important; }
 .modal-card {
   width: min(960px, calc(100vw - 40px));
   max-height: calc(100vh - 40px);
@@ -560,6 +623,17 @@ textarea.code-edit:focus { outline: none; border-color: var(--in-focus-bd); }
 .modal-card-sm { width: min(520px, calc(100vw - 40px)); }
 .modal-card .modal-body label { font-size: 12px; color: var(--muted); }
 .modal-card .modal-body input { margin-top: 5px; }
+.modal-card .modal-body .checkbox-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+.modal-card .modal-body .checkbox-inline input[type="checkbox"] {
+  margin-top: 0;
+  width: auto;
+}
 .modal-header, .modal-footer {
   padding: 14px 16px;
   display: flex;
@@ -604,6 +678,18 @@ textarea.code-edit:focus { outline: none; border-color: var(--in-focus-bd); }
 .preview-item .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .preview-toolbar { margin-bottom: 10px; align-items: center; }
 .preview-errors { margin-top: 8px; color: var(--sev-c); font-size: 12px; }
+.preview-loading {
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+}
+.spinner-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
 
 /* --- Scan Detail --- */
 .scan-detail-layout { display: grid; gap: 14px; }
@@ -630,6 +716,10 @@ textarea.code-edit:focus { outline: none; border-color: var(--in-focus-bd); }
   border-top-color: rgba(52,211,153,.90);
   animation: spin .75s linear infinite;
   flex: 0 0 auto;
+}
+.spinner-dot-accent {
+  border-color: rgba(15,122,248,.18);
+  border-top-color: rgba(15,122,248,.92);
 }
 
 /* --- Scrollbars --- */

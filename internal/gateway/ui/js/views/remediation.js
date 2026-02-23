@@ -4,9 +4,11 @@ import {
   refreshRemediation,
   refreshRemediationRepoSuggestions,
   refreshRemediationTasks,
+  selectJob,
   startRemediationCampaign,
   stopRemediationCampaign,
 } from "../actions.js";
+import { setView } from "../router.js";
 import { state } from "../state.js";
 import { escapeHtml, fmtDate, setHtml, statusClass } from "../utils.js";
 
@@ -25,6 +27,36 @@ function getRemediationRepoSuggestionsFiltered() {
   let items = all.filter((r) => !selected.has(getScannedRepoLabel(r).toLowerCase()));
   if (q) items = items.filter((r) => getScannedRepoLabel(r).toLowerCase().includes(q));
   return items.slice(0, 12);
+}
+
+function formatAIOrigin(r) {
+  const provider = String(r?.ai_provider || "").trim();
+  const model = String(r?.ai_model || "").trim();
+  const endpoint = String(r?.ai_endpoint || "").trim();
+  const endpointLabel = endpoint
+    ? endpoint.replace(/^https?:\/\//i, "").replace(/\/v1\/?$/i, "")
+    : "";
+  const pm = [provider, model].filter(Boolean).join(" / ");
+  if (pm && endpointLabel) return `${pm} @ ${endpointLabel}`;
+  if (pm) return pm;
+  if (endpointLabel) return endpointLabel;
+  return "-";
+}
+
+function formatProgress(r) {
+  const pct = Number(r?.ai_progress_percent || 0);
+  const current = Number(r?.ai_progress_current || 0);
+  const total = Number(r?.ai_progress_total || 0);
+  const phase = String(r?.ai_progress_phase || "").trim();
+  const note = String(r?.ai_progress_note || "").trim();
+  const parts = [];
+  if (phase) parts.push(phase);
+  if (total > 0) parts.push(`${current}/${total}`);
+  if (pct > 0 || total > 0) parts.push(`${pct}%`);
+  let out = parts.join(" • ");
+  if (!out && !note) return "-";
+  if (note) out = out ? `${out} — ${note}` : note;
+  return out;
 }
 
 export function renderRemediation() {
@@ -161,21 +193,23 @@ export function renderRemediation() {
           <h3>Campaign Tasks ${selected ? `#${selected.id}` : ""}</h3>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>Repo</th><th>Scan Job</th><th>Status</th><th>Worker</th><th>Message</th></tr></thead>
+              <thead><tr><th>ID</th><th>Repo</th><th>Scan Job</th><th>Status</th><th>AI Model</th><th>Progress</th><th>Worker</th><th>Message</th></tr></thead>
               <tbody>
                 ${
                   tasks
                     .map(
-                      (t) => `<tr>
+                      (t) => `<tr data-rem-task-scan-job-id="${Number(t.scan_job_id || 0)}" style="cursor:pointer">
                   <td>#${t.id}</td>
                   <td>${escapeHtml(t.owner)}/${escapeHtml(t.repo)}</td>
                   <td>#${t.scan_job_id}</td>
                   <td><span class="${statusClass(t.status)}">${escapeHtml(t.status)}</span></td>
+                  <td class="muted">${escapeHtml(formatAIOrigin(t))}</td>
+                  <td class="muted">${escapeHtml(formatProgress(t))}</td>
                   <td>${escapeHtml(t.worker_name || "")}</td>
                   <td class="muted">${escapeHtml(t.error_msg || "")}</td>
                 </tr>`
                     )
-                    .join("") || `<tr><td colspan="6" class="muted">Select a campaign to inspect tasks.</td></tr>`
+                    .join("") || `<tr><td colspan="8" class="muted">Select a campaign to inspect tasks.</td></tr>`
                 }
               </tbody>
             </table>
@@ -260,6 +294,14 @@ export function renderRemediation() {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       await stopRemediationCampaign(Number(btn.dataset.remStop));
+    })
+  );
+  root.querySelectorAll("[data-rem-task-scan-job-id]").forEach((tr) =>
+    tr.addEventListener("click", async () => {
+      const scanJobID = Number(tr.dataset.remTaskScanJobId || 0);
+      if (!scanJobID) return;
+      await selectJob(scanJobID, { preserveFindingsState: false, preserveRemediationState: true });
+      setView("scan-detail");
     })
   );
 }

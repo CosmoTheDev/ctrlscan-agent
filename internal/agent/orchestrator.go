@@ -31,12 +31,12 @@ type Orchestrator struct {
 
 // OrchestratorOptions controls loop behavior for different runtimes (CLI agent vs gateway).
 type OrchestratorOptions struct {
-	RunInitialSweep  bool
-	EnablePolling    bool
-	OnSweepStarted   func(payload map[string]any)
-	OnSweepCompleted func(payload map[string]any)
-	OnRepoSkipped    func(payload map[string]any)
-	OnWorkerStatus   func(payload map[string]any)
+	RunInitialSweep    bool
+	EnablePolling      bool
+	OnSweepStarted     func(payload map[string]any)
+	OnSweepCompleted   func(payload map[string]any)
+	OnRepoSkipped      func(payload map[string]any)
+	OnWorkerStatus     func(payload map[string]any)
 	OnRemediationEvent func(eventType string, payload map[string]any)
 }
 
@@ -533,16 +533,16 @@ func (o *Orchestrator) setWorkerStatus(ws WorkerStatus) {
 	o.workerStates[ws.Name] = ws
 	if o.opts.OnWorkerStatus != nil {
 		payload := map[string]any{
-			"name":       ws.Name,
-			"kind":       ws.Kind,
-			"status":     ws.Status,
-			"action":     ws.Action,
-			"repo":       ws.Repo,
+			"name":        ws.Name,
+			"kind":        ws.Kind,
+			"status":      ws.Status,
+			"action":      ws.Action,
+			"repo":        ws.Repo,
 			"scan_job_id": ws.ScanJobID,
 			"campaign_id": ws.CampaignID,
-			"task_id":    ws.TaskID,
-			"message":    ws.Message,
-			"updated_at": ws.UpdatedAt,
+			"task_id":     ws.TaskID,
+			"message":     ws.Message,
+			"updated_at":  ws.UpdatedAt,
 		}
 		o.opts.OnWorkerStatus(payload)
 	}
@@ -642,7 +642,7 @@ func (o *Orchestrator) processOneRemediationTask(ctx context.Context, aiProv ai.
 
 	fixer := NewFixerAgent(&cfgCopy, o.db, aiProv)
 	before := countFixQueueForScanJob(ctx, o.db, task.ScanJobID)
-	fixer.processFixJob(ctx, fixJob{
+	if err := fixer.processFixJob(ctx, fixJob{
 		ScanJobID:         task.ScanJobID,
 		RemediationTaskID: task.ID,
 		Provider:          task.Provider,
@@ -650,7 +650,19 @@ func (o *Orchestrator) processOneRemediationTask(ctx context.Context, aiProv ai.
 		Repo:              task.Repo,
 		Branch:            cloneResult.Branch,
 		RepoPath:          cloneResult.LocalPath,
-	})
+	}); err != nil {
+		msg := fmt.Sprintf("processing remediation task: %v", err)
+		_ = o.db.Exec(ctx, `UPDATE remediation_tasks SET status = 'failed', error_msg = ?, completed_at = ? WHERE id = ?`,
+			msg, time.Now().UTC().Format(time.RFC3339), task.ID)
+		_ = o.refreshRemediationCampaignStats(ctx, task.CampaignID)
+		o.setWorkerStatus(WorkerStatus{
+			Name: workerName, Kind: "remediation", Status: "waiting", Action: "waiting for campaigns",
+		})
+		o.emitRemediationEvent("campaign.task.failed", map[string]any{
+			"campaign_id": task.CampaignID, "task_id": task.ID, "repo": repoFull, "error": msg,
+		})
+		return
+	}
 	after := countFixQueueForScanJob(ctx, o.db, task.ScanJobID)
 	if autoPR == 1 {
 		o.TriggerPRProcessing()
@@ -710,7 +722,9 @@ func (o *Orchestrator) refreshRemediationCampaignStats(ctx context.Context, camp
 }
 
 func countFixQueueForScanJob(ctx context.Context, db database.DB, scanJobID int64) int {
-	type row struct{ N int `db:"n"` }
+	type row struct {
+		N int `db:"n"`
+	}
 	var r row
 	_ = db.Get(ctx, &r, `SELECT COUNT(*) AS n FROM fix_queue WHERE scan_job_id = ?`, scanJobID)
 	return r.N

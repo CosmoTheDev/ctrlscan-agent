@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -35,6 +36,13 @@ func NewOpenAI(cfg config.AIConfig) (*OpenAIProvider, error) {
 	if base == "" {
 		base = defaultOpenAIBase
 	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("invalid OpenAI base URL: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return nil, fmt.Errorf("invalid OpenAI base URL scheme %q", u.Scheme)
+	}
 	model := cfg.Model
 	if model == "" {
 		model = "gpt-4o"
@@ -58,6 +66,7 @@ func (o *OpenAIProvider) IsAvailable(ctx context.Context) bool {
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	// #nosec G107 -- baseURL is loaded from local trusted config and validated in NewOpenAI.
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return false
@@ -268,15 +277,19 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 		req.Header.Set("Authorization", "Bearer "+o.apiKey)
 		req.Header.Set("Content-Type", "application/json")
 
+		// #nosec G107 -- baseURL is loaded from local trusted config and validated in NewOpenAI.
 		resp, err := o.client.Do(req)
 		if err != nil {
 			return "", fmt.Errorf("calling OpenAI API: %w", err)
 		}
 		respStatus = resp.StatusCode
 		respBody, err = io.ReadAll(resp.Body)
-		resp.Body.Close()
+		closeErr := resp.Body.Close()
 		if err != nil {
 			return "", fmt.Errorf("reading response body: %w", err)
+		}
+		if closeErr != nil {
+			slog.Debug("closing OpenAI response body", "error", closeErr)
 		}
 
 		if resp.StatusCode == http.StatusOK {

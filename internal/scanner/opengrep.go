@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -32,8 +33,7 @@ func (l *opengrepStringList) UnmarshalJSON(data []byte) error {
 		}
 		return nil
 	}
-	var anyVal interface{}
-	if err := json.Unmarshal(data, &anyVal); err == nil && anyVal == nil {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		*l = nil
 		return nil
 	}

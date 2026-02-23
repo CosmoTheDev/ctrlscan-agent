@@ -66,7 +66,7 @@ func (o *OpenAIProvider) IsAvailable(ctx context.Context) bool {
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	// #nosec G107 -- baseURL is loaded from local trusted config and validated in NewOpenAI.
+	// #nosec G107,G704 -- baseURL is loaded from trusted local config and validated in NewOpenAI.
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return false
@@ -277,7 +277,7 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 		req.Header.Set("Authorization", "Bearer "+o.apiKey)
 		req.Header.Set("Content-Type", "application/json")
 
-		// #nosec G107 -- baseURL is loaded from local trusted config and validated in NewOpenAI.
+		// #nosec G107,G704 -- baseURL is loaded from trusted local config and validated in NewOpenAI.
 		resp, err := o.client.Do(req)
 		if err != nil {
 			return "", fmt.Errorf("calling OpenAI API: %w", err)

@@ -11,10 +11,13 @@ import (
 var gatewayUI embed.FS
 
 func (gw *Gateway) handleUIIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/ui" && r.URL.Path != "/ui/" {
+	path := r.URL.Path
+	if path != "/ui" && !strings.HasPrefix(path, "/ui/") {
 		http.NotFound(w, r)
 		return
 	}
+	// SPA fallback: serve index.html for deep links like /ui/scans or /ui/cronjobs.
+	// Static assets are handled by more specific routes above.
 	data, err := gatewayUI.ReadFile("ui/index.html")
 	if err != nil {
 		http.Error(w, "UI not available", http.StatusInternalServerError)

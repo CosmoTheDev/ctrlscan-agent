@@ -1,0 +1,15 @@
+{
+  "name": "ctrlscan-gateway-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "biome check internal/gateway/ui/js/ internal/gateway/ui/app.js",
+    "lint:fix": "biome check --write internal/gateway/ui/js/ internal/gateway/ui/app.js",
+    "build": "esbuild internal/gateway/ui/app.js --bundle --platform=browser --format=esm 1>/dev/null"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "esbuild": "^0.25.0"
+  }
+}

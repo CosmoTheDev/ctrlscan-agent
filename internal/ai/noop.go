@@ -8,7 +8,7 @@ import (
 )
 
 // errNoAI is returned by NoopProvider for all AI operations.
-var errNoAI = errors.New("AI provider not configured — run 'ctrlscan onboard' to add an API key")
+var errNoAI = errors.New("AI provider not configured — run 'ctrlscan onboard' to enable OpenAI, Ollama, or LM Studio")
 
 // NoopProvider is used when no AI provider is configured.
 // IsAvailable always returns false; all other methods return errNoAI.

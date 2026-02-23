@@ -1,15 +1,18 @@
-import { state } from './state.js';
-import { escapeHtml, setHtml } from './utils.js';
+import { state } from "./state.js";
+import { escapeHtml, setHtml } from "./utils.js";
 
 export function showToast({ title, message = "", kind = "info", timeoutMs = 3500 } = {}) {
   const stack = document.getElementById("toastStack");
   if (!stack) return;
   const el = document.createElement("div");
   el.className = `toast toast-${kind}`;
-  setHtml(el, `
+  setHtml(
+    el,
+    `
     <div class="toast-title">${escapeHtml(title || "Notice")}</div>
     ${message ? `<div class="toast-body">${escapeHtml(message)}</div>` : ""}
-  `);
+  `
+  );
   stack.prepend(el);
   const remove = () => {
     if (el.parentNode) el.parentNode.removeChild(el);
@@ -28,7 +31,10 @@ export function handleToastForEvent(evt) {
       state.sweepUi.skipEventCount = 0;
       const selected = Number(payload.selected_repos || 0);
       const workers = Number(payload.workers || 0);
-      let msg = selected > 0 ? `Trigger accepted for ${selected} selected repos.` : "Trigger accepted. Discovery and scans will start shortly.";
+      let msg =
+        selected > 0
+          ? `Trigger accepted for ${selected} selected repos.`
+          : "Trigger accepted. Discovery and scans will start shortly.";
       if (workers > 0) msg += ` Workers: ${workers}.`;
       showToast({ title: "Sweep Triggered", message: msg, kind: "info", timeoutMs: 3000 });
       break;
@@ -64,11 +70,13 @@ export function handleToastForEvent(evt) {
         completed_at: payload.completed_at || new Date().toISOString(),
         duration_seconds: Number(payload.duration_seconds || 0),
         skipped_repos: Number(payload.skipped_repos || 0),
-        skipped_by_reason: payload.skipped_by_reason && typeof payload.skipped_by_reason === "object" ? payload.skipped_by_reason : {},
+        skipped_by_reason:
+          payload.skipped_by_reason && typeof payload.skipped_by_reason === "object" ? payload.skipped_by_reason : {},
       };
       const status = String(payload.status || "completed");
       const skipped = Number(payload.skipped_repos || 0);
-      const reasons = payload.skipped_by_reason && typeof payload.skipped_by_reason === "object" ? payload.skipped_by_reason : {};
+      const reasons =
+        payload.skipped_by_reason && typeof payload.skipped_by_reason === "object" ? payload.skipped_by_reason : {};
       const recentSkipped = Number(reasons["recently scanned within 24h"] || 0);
       let title = "Sweep Completed";
       let kind = "success";
@@ -87,7 +95,12 @@ export function handleToastForEvent(evt) {
       break;
     }
     case "agent.stop_requested": {
-      showToast({ title: "Stopping Sweep", message: "Cancellation requested. Running scanners will stop shortly.", kind: "warn", timeoutMs: 3500 });
+      showToast({
+        title: "Stopping Sweep",
+        message: "Cancellation requested. Running scanners will stop shortly.",
+        kind: "warn",
+        timeoutMs: 3500,
+      });
       break;
     }
   }

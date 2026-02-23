@@ -1,12 +1,14 @@
-import { state } from '../state.js';
-import { escapeHtml, setHtml, fmtDate } from '../utils.js';
 // Circular imports — all usages are inside function bodies.
-import { refreshCron, createCron, triggerCron, deleteCron } from '../actions.js';
+import { createCron, deleteCron, refreshCron, triggerCron } from "../actions.js";
+import { state } from "../state.js";
+import { escapeHtml, fmtDate, setHtml } from "../utils.js";
 
 export function renderCron() {
   const root = document.getElementById("view-cron");
   const rows = state.schedules || [];
-  setHtml(root, `
+  setHtml(
+    root,
+    `
     <div class="card">
       <h3>Create Schedule</h3>
       <div class="form-grid">
@@ -26,7 +28,10 @@ export function renderCron() {
         <table>
           <thead><tr><th>ID</th><th>Name</th><th>Expr</th><th>Last Run</th><th>Actions</th></tr></thead>
           <tbody>
-            ${rows.map(s => `
+            ${
+              rows
+                .map(
+                  (s) => `
               <tr>
                 <td>#${s.id}</td>
                 <td>${escapeHtml(s.name)}</td>
@@ -36,18 +41,22 @@ export function renderCron() {
                   <button class="btn btn-secondary" data-action="trigger" data-id="${s.id}">Trigger</button>
                   <button class="btn btn-danger" data-action="delete" data-id="${s.id}">Delete</button>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="5" class="muted">No schedules configured.</td></tr>`}
+              </tr>`
+                )
+                .join("") || `<tr><td colspan="5" class="muted">No schedules configured.</td></tr>`
+            }
           </tbody>
         </table>
       </div>
     </div>
-  `);
+  `
+  );
   root.querySelector("#cronRefresh")?.addEventListener("click", refreshCron);
   root.querySelector("#cronCreate")?.addEventListener("click", createCron);
-  root.querySelectorAll("[data-action='trigger']").forEach(btn =>
-    btn.addEventListener("click", () => triggerCron(Number(btn.dataset.id)))
-  );
-  root.querySelectorAll("[data-action='delete']").forEach(btn =>
-    btn.addEventListener("click", () => deleteCron(Number(btn.dataset.id)))
-  );
+  root
+    .querySelectorAll("[data-action='trigger']")
+    .forEach((btn) => btn.addEventListener("click", () => triggerCron(Number(btn.dataset.id))));
+  root
+    .querySelectorAll("[data-action='delete']")
+    .forEach((btn) => btn.addEventListener("click", () => deleteCron(Number(btn.dataset.id))));
 }

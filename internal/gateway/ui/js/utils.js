@@ -41,7 +41,9 @@ export function fmtDate(v) {
 }
 
 export function normalizeSeverityLabel(v) {
-  return String(v || "").trim().toUpperCase();
+  return String(v || "")
+    .trim()
+    .toUpperCase();
 }
 
 export function severityBucket(v) {

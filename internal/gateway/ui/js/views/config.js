@@ -1,13 +1,15 @@
-import { state } from '../state.js';
-import { escapeHtml, setHtml } from '../utils.js';
-import { api } from '../api.js';
+import { refreshConfig } from "../actions.js";
+import { api } from "../api.js";
 // Circular imports — all usages are inside function bodies.
-import { showNotice } from '../modals.js';
-import { refreshConfig } from '../actions.js';
+import { showNotice } from "../modals.js";
+import { state } from "../state.js";
+import { escapeHtml, setHtml } from "../utils.js";
 
 export function renderConfig() {
   const root = document.getElementById("view-config");
-  setHtml(root, `
+  setHtml(
+    root,
+    `
     <div class="card">
       <h3>Gateway Config</h3>
       <div class="muted">Path: ${escapeHtml(state.configPath || "default")}</div>
@@ -18,7 +20,8 @@ export function renderConfig() {
       </div>
       <textarea id="cfgEditor" class="code-edit"></textarea>
     </div>
-  `);
+  `
+  );
   const editor = root.querySelector("#cfgEditor");
   editor.value = state.config ? JSON.stringify(state.config, null, 2) : "{\n}";
   root.querySelector("#cfgRefresh").addEventListener("click", refreshConfig);

@@ -1,7 +1,14 @@
-import { state } from '../state.js';
-import { escapeHtml, setHtml, fmtDate, statusClass } from '../utils.js';
 // Circular imports — all usages are inside function bodies.
-import { refreshRemediation, refreshRemediationRepoSuggestions, refreshRemediationTasks, createRemediationCampaign, startRemediationCampaign, stopRemediationCampaign } from '../actions.js';
+import {
+  createRemediationCampaign,
+  refreshRemediation,
+  refreshRemediationRepoSuggestions,
+  refreshRemediationTasks,
+  startRemediationCampaign,
+  stopRemediationCampaign,
+} from "../actions.js";
+import { state } from "../state.js";
+import { escapeHtml, fmtDate, setHtml, statusClass } from "../utils.js";
 
 function getScannedRepoLabel(r) {
   const owner = String(r?.owner || "").trim();
@@ -10,11 +17,13 @@ function getScannedRepoLabel(r) {
 }
 
 function getRemediationRepoSuggestionsFiltered() {
-  const q = String(state.remediationRepoFilter || "").trim().toLowerCase();
+  const q = String(state.remediationRepoFilter || "")
+    .trim()
+    .toLowerCase();
   const all = Array.isArray(state.remediationRepoSuggestions) ? state.remediationRepoSuggestions : [];
-  const selected = new Set((state.remediationDraft?.selectedRepos || []).map(v => String(v).toLowerCase()));
-  let items = all.filter(r => !selected.has(getScannedRepoLabel(r).toLowerCase()));
-  if (q) items = items.filter(r => getScannedRepoLabel(r).toLowerCase().includes(q));
+  const selected = new Set((state.remediationDraft?.selectedRepos || []).map((v) => String(v).toLowerCase()));
+  let items = all.filter((r) => !selected.has(getScannedRepoLabel(r).toLowerCase()));
+  if (q) items = items.filter((r) => getScannedRepoLabel(r).toLowerCase().includes(q));
   return items.slice(0, 12);
 }
 
@@ -23,7 +32,7 @@ export function renderRemediation() {
   if (!root) return;
   const campaigns = state.remediationCampaigns || [];
   const draft = state.remediationDraft || {};
-  let selected = campaigns.find(c => c.id === state.remediationSelectedCampaignId) || null;
+  let selected = campaigns.find((c) => c.id === state.remediationSelectedCampaignId) || null;
   if (!selected && campaigns.length > 0) {
     selected = campaigns[0];
     state.remediationSelectedCampaignId = selected.id;
@@ -31,7 +40,9 @@ export function renderRemediation() {
   const tasks = state.remediationCampaignTasks || [];
   const repoSuggest = getRemediationRepoSuggestionsFiltered();
   const selectedRepos = Array.isArray(draft.selectedRepos) ? draft.selectedRepos : [];
-  setHtml(root, `
+  setHtml(
+    root,
+    `
     <div class="stack">
       <div class="split">
         <div class="card">
@@ -62,11 +73,18 @@ export function renderRemediation() {
                 <table>
                   <thead><tr><th>Repo</th><th>Provider</th><th>Action</th></tr></thead>
                   <tbody>
-                    ${repoSuggest.map((r) => `<tr>
+                    ${
+                      repoSuggest
+                        .map(
+                          (r) => `<tr>
                       <td>${escapeHtml(getScannedRepoLabel(r))}</td>
                       <td>${escapeHtml(r.provider || "")}</td>
                       <td><button class="btn btn-secondary" data-rem-repo-add="${escapeHtml(getScannedRepoLabel(r))}">Add</button></td>
-                    </tr>`).join("") || `<tr><td colspan="3" class="muted">${state.remediationRepoSuggestionsLoaded ? "No matching scanned repos." : "Repo suggestions not loaded yet."}</td></tr>`}
+                    </tr>`
+                        )
+                        .join("") ||
+                      `<tr><td colspan="3" class="muted">${state.remediationRepoSuggestionsLoaded ? "No matching scanned repos." : "Repo suggestions not loaded yet."}</td></tr>`
+                    }
                   </tbody>
                 </table>
               </div>
@@ -88,14 +106,20 @@ export function renderRemediation() {
             <table>
               <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Action</th><th>Repo</th><th>Updated</th></tr></thead>
               <tbody>
-                ${(state.agentWorkers || []).map(w => `<tr>
+                ${
+                  (state.agentWorkers || [])
+                    .map(
+                      (w) => `<tr>
                   <td>${escapeHtml(w.name)}</td>
                   <td>${escapeHtml(w.kind)}</td>
                   <td><span class="${statusClass(w.status)}">${escapeHtml(w.status)}</span></td>
                   <td>${escapeHtml(w.action || "")}</td>
                   <td>${escapeHtml(w.repo || "")}</td>
                   <td>${escapeHtml(fmtDate(w.updated_at))}</td>
-                </tr>`).join("") || `<tr><td colspan="6" class="muted">No worker status yet.</td></tr>`}
+                </tr>`
+                    )
+                    .join("") || `<tr><td colspan="6" class="muted">No worker status yet.</td></tr>`
+                }
               </tbody>
             </table>
           </div>
@@ -109,7 +133,12 @@ export function renderRemediation() {
             <table>
               <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Mode</th><th>Tasks</th><th>Actions</th></tr></thead>
               <tbody>
-                ${campaigns.map(c => `<tr data-rem-campaign-id="${c.id}" style="cursor:pointer; ${selected && selected.id === c.id ? "background:rgba(79,140,255,.08)" : ""}">
+                ${
+                  campaigns
+                    .map(
+                      (
+                        c
+                      ) => `<tr data-rem-campaign-id="${c.id}" style="cursor:pointer; ${selected && selected.id === c.id ? "background:rgba(79,140,255,.08)" : ""}">
                   <td>#${c.id}</td>
                   <td>${escapeHtml(c.name)}</td>
                   <td><span class="${statusClass(c.status)}">${escapeHtml(c.status)}</span></td>
@@ -117,9 +146,12 @@ export function renderRemediation() {
                   <td>${c.completed_tasks}/${c.total_tasks} <span class="muted">(P:${c.pending_tasks} R:${c.running_tasks} F:${c.failed_tasks})</span></td>
                   <td class="row-actions">
                     <button class="btn btn-secondary" data-rem-start="${c.id}" ${c.status === "running" ? "disabled" : ""}>Start</button>
-                    <button class="btn btn-danger" data-rem-stop="${c.id}" ${["running","draft"].includes(String(c.status)) ? "" : "disabled"}>Stop</button>
+                    <button class="btn btn-danger" data-rem-stop="${c.id}" ${["running", "draft"].includes(String(c.status)) ? "" : "disabled"}>Stop</button>
                   </td>
-                </tr>`).join("") || `<tr><td colspan="6" class="muted">No remediation campaigns yet.</td></tr>`}
+                </tr>`
+                    )
+                    .join("") || `<tr><td colspan="6" class="muted">No remediation campaigns yet.</td></tr>`
+                }
               </tbody>
             </table>
           </div>
@@ -131,32 +163,49 @@ export function renderRemediation() {
             <table>
               <thead><tr><th>ID</th><th>Repo</th><th>Scan Job</th><th>Status</th><th>Worker</th><th>Message</th></tr></thead>
               <tbody>
-                ${tasks.map(t => `<tr>
+                ${
+                  tasks
+                    .map(
+                      (t) => `<tr>
                   <td>#${t.id}</td>
                   <td>${escapeHtml(t.owner)}/${escapeHtml(t.repo)}</td>
                   <td>#${t.scan_job_id}</td>
                   <td><span class="${statusClass(t.status)}">${escapeHtml(t.status)}</span></td>
                   <td>${escapeHtml(t.worker_name || "")}</td>
                   <td class="muted">${escapeHtml(t.error_msg || "")}</td>
-                </tr>`).join("") || `<tr><td colspan="6" class="muted">Select a campaign to inspect tasks.</td></tr>`}
+                </tr>`
+                    )
+                    .join("") || `<tr><td colspan="6" class="muted">Select a campaign to inspect tasks.</td></tr>`
+                }
               </tbody>
             </table>
           </div>
         </div>
       </div>
     </div>
-  `);
+  `
+  );
 
   root.querySelector("#remRefresh")?.addEventListener("click", refreshRemediation);
   root.querySelector("#remCreate")?.addEventListener("click", createRemediationCampaign);
   root.querySelector("#remRepoReload")?.addEventListener("click", async () => {
     await refreshRemediationRepoSuggestions(true);
   });
-  root.querySelector("#remName")?.addEventListener("input", (e) => { state.remediationDraft.name = e.target.value; });
-  root.querySelector("#remMode")?.addEventListener("change", (e) => { state.remediationDraft.mode = e.target.value; });
-  root.querySelector("#remMaxRepos")?.addEventListener("input", (e) => { state.remediationDraft.maxRepos = e.target.value; });
-  root.querySelector("#remAutoPR")?.addEventListener("change", (e) => { state.remediationDraft.autoPR = !!e.target.checked; });
-  root.querySelector("#remStartNow")?.addEventListener("change", (e) => { state.remediationDraft.startNow = !!e.target.checked; });
+  root.querySelector("#remName")?.addEventListener("input", (e) => {
+    state.remediationDraft.name = e.target.value;
+  });
+  root.querySelector("#remMode")?.addEventListener("change", (e) => {
+    state.remediationDraft.mode = e.target.value;
+  });
+  root.querySelector("#remMaxRepos")?.addEventListener("input", (e) => {
+    state.remediationDraft.maxRepos = e.target.value;
+  });
+  root.querySelector("#remAutoPR")?.addEventListener("change", (e) => {
+    state.remediationDraft.autoPR = !!e.target.checked;
+  });
+  root.querySelector("#remStartNow")?.addEventListener("change", (e) => {
+    state.remediationDraft.startNow = !!e.target.checked;
+  });
   root.querySelector("#remRepoSearch")?.addEventListener("input", (e) => {
     state.remediationRepoFilter = e.target.value;
     renderRemediation();
@@ -165,7 +214,9 @@ export function renderRemediation() {
     if (e.key !== "Enter") return;
     e.preventDefault();
     const q = String(e.target.value || "").trim();
-    const exact = (state.remediationRepoSuggestions || []).find(r => getScannedRepoLabel(r).toLowerCase() === q.toLowerCase());
+    const exact = (state.remediationRepoSuggestions || []).find(
+      (r) => getScannedRepoLabel(r).toLowerCase() === q.toLowerCase()
+    );
     if (exact) {
       const label = getScannedRepoLabel(exact);
       if (!state.remediationDraft.selectedRepos.includes(label)) state.remediationDraft.selectedRepos.push(label);
@@ -173,32 +224,42 @@ export function renderRemediation() {
       renderRemediation();
     }
   });
-  root.querySelectorAll("[data-rem-repo-add]").forEach((btn) => btn.addEventListener("click", (e) => {
-    e.preventDefault();
-    const label = btn.dataset.remRepoAdd;
-    if (!label) return;
-    if (!state.remediationDraft.selectedRepos.includes(label)) state.remediationDraft.selectedRepos.push(label);
-    state.remediationRepoFilter = "";
-    renderRemediation();
-  }));
-  root.querySelectorAll("[data-rem-chip-remove]").forEach((btn) => btn.addEventListener("click", (e) => {
-    e.preventDefault();
-    const label = btn.dataset.remChipRemove;
-    state.remediationDraft.selectedRepos = (state.remediationDraft.selectedRepos || []).filter(r => r !== label);
-    renderRemediation();
-  }));
-  root.querySelectorAll("[data-rem-campaign-id]").forEach((tr) => tr.addEventListener("click", async (e) => {
-    if (e.target.closest("button")) return;
-    state.remediationSelectedCampaignId = Number(tr.dataset.remCampaignId);
-    await refreshRemediationTasks(state.remediationSelectedCampaignId);
-    renderRemediation();
-  }));
-  root.querySelectorAll("[data-rem-start]").forEach((btn) => btn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    await startRemediationCampaign(Number(btn.dataset.remStart));
-  }));
-  root.querySelectorAll("[data-rem-stop]").forEach((btn) => btn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    await stopRemediationCampaign(Number(btn.dataset.remStop));
-  }));
+  root.querySelectorAll("[data-rem-repo-add]").forEach((btn) =>
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      const label = btn.dataset.remRepoAdd;
+      if (!label) return;
+      if (!state.remediationDraft.selectedRepos.includes(label)) state.remediationDraft.selectedRepos.push(label);
+      state.remediationRepoFilter = "";
+      renderRemediation();
+    })
+  );
+  root.querySelectorAll("[data-rem-chip-remove]").forEach((btn) =>
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      const label = btn.dataset.remChipRemove;
+      state.remediationDraft.selectedRepos = (state.remediationDraft.selectedRepos || []).filter((r) => r !== label);
+      renderRemediation();
+    })
+  );
+  root.querySelectorAll("[data-rem-campaign-id]").forEach((tr) =>
+    tr.addEventListener("click", async (e) => {
+      if (e.target.closest("button")) return;
+      state.remediationSelectedCampaignId = Number(tr.dataset.remCampaignId);
+      await refreshRemediationTasks(state.remediationSelectedCampaignId);
+      renderRemediation();
+    })
+  );
+  root.querySelectorAll("[data-rem-start]").forEach((btn) =>
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await startRemediationCampaign(Number(btn.dataset.remStart));
+    })
+  );
+  root.querySelectorAll("[data-rem-stop]").forEach((btn) =>
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await stopRemediationCampaign(Number(btn.dataset.remStop));
+    })
+  );
 }

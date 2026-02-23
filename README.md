@@ -149,7 +149,7 @@ ctrlscan config      View/edit configuration
 
 - Go 1.21+ (for building from source)
 - `curl`, `git` (for tool installation)
-- OpenAI API key (get one at platform.openai.com)
+- AI provider for triage/fixes/PRs: OpenAI API key, local Ollama, or LM Studio (OpenAI-compatible local endpoint)
 - GitHub/GitLab/Azure token for API access (for GitHub classic PATs, create one at `https://github.com/settings/tokens/new`; add write access if you want PR creation)
 
 ## Codex MCP (Playwright + SQLite)

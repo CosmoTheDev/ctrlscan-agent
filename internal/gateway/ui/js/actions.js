@@ -1,18 +1,18 @@
-import { state } from './state.js';
-import { api } from './api.js';
-import { severityBucket } from './utils.js';
-import { showToast, handleToastForEvent } from './toast.js';
-import { setView } from './router.js';
+import { api } from "./api.js";
 // Circular imports — all usages are inside function bodies.
-import { showNotice, showConfirm, showPrompt, renderPathIgnoreModal, closeTriggerModal } from './modals.js';
-import { renderOverview, renderHealthPill } from './views/overview.js';
-import { renderScans } from './views/scans.js';
-import { renderScanDetailPage } from './views/scan-detail.js';
-import { renderRemediation } from './views/remediation.js';
-import { renderCron } from './views/cron.js';
-import { renderAgents } from './views/agents.js';
-import { renderConfig } from './views/config.js';
-import { renderEvents } from './views/events.js';
+import { closeTriggerModal, renderPathIgnoreModal, showConfirm, showNotice, showPrompt } from "./modals.js";
+import { setView } from "./router.js";
+import { state } from "./state.js";
+import { handleToastForEvent, showToast } from "./toast.js";
+import { severityBucket } from "./utils.js";
+import { renderAgents } from "./views/agents.js";
+import { renderConfig } from "./views/config.js";
+import { renderCron } from "./views/cron.js";
+import { renderEvents } from "./views/events.js";
+import { renderHealthPill, renderOverview } from "./views/overview.js";
+import { renderRemediation } from "./views/remediation.js";
+import { renderScanDetailPage } from "./views/scan-detail.js";
+import { renderScans } from "./views/scans.js";
 
 /* ---- SSE / Events ---- */
 
@@ -32,7 +32,17 @@ export function pushEvent(evt) {
   if (["fix.approved", "fix.rejected"].includes(evt.type)) {
     scheduleLiveRefresh({ jobs: true, detail: true, workers: true });
   }
-  if (["worker.status", "campaign.started", "campaign.completed", "campaign.task.started", "campaign.task.completed", "campaign.task.failed", "campaign.stopped"].includes(evt.type)) {
+  if (
+    [
+      "worker.status",
+      "campaign.started",
+      "campaign.completed",
+      "campaign.task.started",
+      "campaign.task.completed",
+      "campaign.task.failed",
+      "campaign.stopped",
+    ].includes(evt.type)
+  ) {
     scheduleLiveRefresh({ workers: true, remediation: true, detail: true });
   }
   if (["sweep.started", "sweep.completed"].includes(evt.type)) {
@@ -112,7 +122,7 @@ export async function refreshStatus() {
 /* ---- Jobs ---- */
 
 function reconcileSelectedJobs() {
-  const visible = new Set((state.jobs || []).map(j => j.id));
+  const visible = new Set((state.jobs || []).map((j) => j.id));
   const next = {};
   for (const rawId of Object.keys(state.selectedScanJobIds || {})) {
     const id = Number(rawId);
@@ -138,7 +148,7 @@ export async function refreshJobs() {
   const totalPages = Math.max(1, Number(state.jobsTotalPages || 1));
   if ((state.scansPage || 1) > totalPages) state.scansPage = totalPages;
   reconcileSelectedJobs();
-  if (state.selectedJobId && !state.jobs.some(j => j.id === state.selectedJobId)) {
+  if (state.selectedJobId && !state.jobs.some((j) => j.id === state.selectedJobId)) {
     clearSelectedJob();
   }
   renderScans();
@@ -172,9 +182,9 @@ export async function loadSelectedJobFindings() {
     state.selectedJobFindingsTotal = state.selectedJobFindings.length;
     state.selectedJobFindingsTotalPages = 1;
     state.selectedJobFindingsFacets = {
-      kinds: [...new Set(state.selectedJobFindings.map(f => String(f.kind || "")).filter(Boolean))].sort(),
-      scanners: [...new Set(state.selectedJobFindings.map(f => String(f.scanner || "")).filter(Boolean))].sort(),
-      severities: [...new Set(state.selectedJobFindings.map(f => severityBucket(f.severity)).filter(Boolean))],
+      kinds: [...new Set(state.selectedJobFindings.map((f) => String(f.kind || "")).filter(Boolean))].sort(),
+      scanners: [...new Set(state.selectedJobFindings.map((f) => String(f.scanner || "")).filter(Boolean))].sort(),
+      severities: [...new Set(state.selectedJobFindings.map((f) => severityBucket(f.severity)).filter(Boolean))],
     };
     state.selectedJobFindingsSeverityTotals = null;
   }
@@ -253,13 +263,16 @@ export function clearSelectedJob() {
 }
 
 export async function deleteOneScanJob(id) {
-  const job = (state.jobs || []).find(j => j.id === id);
+  const job = (state.jobs || []).find((j) => j.id === id);
   const label = job ? `${job.owner}/${job.repo}` : `#${id}`;
-  if (!(await showConfirm({
-    title: "Delete Scan Job",
-    message: `Delete scan job #${id} (${label})? This removes stored findings and raw outputs for the job.`,
-    confirmLabel: "Delete",
-  }))) return;
+  if (
+    !(await showConfirm({
+      title: "Delete Scan Job",
+      message: `Delete scan job #${id} (${label})? This removes stored findings and raw outputs for the job.`,
+      confirmLabel: "Delete",
+    }))
+  )
+    return;
   try {
     await api(`/api/jobs/${id}`, { method: "DELETE" });
     delete state.selectedScanJobIds[id];
@@ -270,13 +283,19 @@ export async function deleteOneScanJob(id) {
 }
 
 export async function deleteSelectedScanJobs() {
-  const ids = Object.keys(state.selectedScanJobIds || {}).map(Number).filter(Boolean).sort((a, b) => a - b);
+  const ids = Object.keys(state.selectedScanJobIds || {})
+    .map(Number)
+    .filter(Boolean)
+    .sort((a, b) => a - b);
   if (ids.length === 0) return;
-  if (!(await showConfirm({
-    title: "Delete Selected Scan Jobs",
-    message: `Delete ${ids.length} selected scan job${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
-    confirmLabel: "Delete Selected",
-  }))) return;
+  if (
+    !(await showConfirm({
+      title: "Delete Selected Scan Jobs",
+      message: `Delete ${ids.length} selected scan job${ids.length === 1 ? "" : "s"}? This cannot be undone.`,
+      confirmLabel: "Delete Selected",
+    }))
+  )
+    return;
   try {
     const res = await api("/api/jobs", { method: "DELETE", body: JSON.stringify({ ids }) });
     if (Array.isArray(res.deleted_ids)) {
@@ -286,7 +305,10 @@ export async function deleteSelectedScanJobs() {
     }
     await refreshJobs();
     if (Array.isArray(res.not_found_ids) && res.not_found_ids.length > 0) {
-      showNotice("Delete Completed", `Deleted ${res.deleted_count || 0} jobs. Not found: ${res.not_found_ids.join(", ")}.`);
+      showNotice(
+        "Delete Completed",
+        `Deleted ${res.deleted_count || 0} jobs. Not found: ${res.not_found_ids.join(", ")}.`
+      );
     }
   } catch (err) {
     showNotice("Bulk Delete Failed", err.message);
@@ -337,7 +359,12 @@ export async function triggerSweepWithOptions({ scanTargets, workers, selectedRe
     if (workers && Number(workers) > 0) payload.workers = Number(workers);
     if (Array.isArray(selectedRepos) && selectedRepos.length > 0) payload.selected_repos = selectedRepos;
     await api("/api/agent/trigger", { method: "POST", body: JSON.stringify(payload) });
-    showToast({ title: "Trigger Submitted", message: "Requested a new scan sweep. Watch the Scans page for live updates.", kind: "info", timeoutMs: 2500 });
+    showToast({
+      title: "Trigger Submitted",
+      message: "Requested a new scan sweep. Watch the Scans page for live updates.",
+      kind: "info",
+      timeoutMs: 2500,
+    });
     closeTriggerModal();
     await refreshStatus();
     await refreshAgent();
@@ -408,7 +435,8 @@ export async function triggerCron(id) {
 }
 
 export async function deleteCron(id) {
-  if (!(await showConfirm({ title: "Delete Schedule", message: `Delete schedule #${id}?`, confirmLabel: "Delete" }))) return;
+  if (!(await showConfirm({ title: "Delete Schedule", message: `Delete schedule #${id}?`, confirmLabel: "Delete" })))
+    return;
   try {
     await fetch(`/api/schedules/${id}`, { method: "DELETE" });
     await refreshCron();
@@ -453,7 +481,10 @@ export async function handleFixAction(id, action) {
       await refreshJobs();
     }
     if (action === "approve-run") {
-      showNotice("PR Processing Started", "The fix was approved and PR processing has been triggered. Refresh or wait for SSE updates to see PR status.");
+      showNotice(
+        "PR Processing Started",
+        "The fix was approved and PR processing has been triggered. Refresh or wait for SSE updates to see PR status."
+      );
     }
   } catch (err) {
     showNotice("Fix Action Failed", err.message);
@@ -464,7 +495,7 @@ export async function handleFixAction(id, action) {
 
 export async function refreshRemediation() {
   state.remediationCampaigns = await api("/api/remediation/campaigns");
-  const ids = new Set((state.remediationCampaigns || []).map(c => c.id));
+  const ids = new Set((state.remediationCampaigns || []).map((c) => c.id));
   if (state.remediationSelectedCampaignId && !ids.has(state.remediationSelectedCampaignId)) {
     state.remediationSelectedCampaignId = null;
   }
@@ -472,7 +503,9 @@ export async function refreshRemediation() {
     state.remediationSelectedCampaignId = state.remediationCampaigns[0].id;
   }
   if (state.remediationSelectedCampaignId) {
-    state.remediationCampaignTasks = await api(`/api/remediation/campaigns/${state.remediationSelectedCampaignId}/tasks`);
+    state.remediationCampaignTasks = await api(
+      `/api/remediation/campaigns/${state.remediationSelectedCampaignId}/tasks`
+    );
   } else {
     state.remediationCampaignTasks = [];
   }
@@ -524,8 +557,8 @@ export async function createRemediationCampaign() {
       return;
     }
   }
-  const repos = [...new Set((draft.selectedRepos || []).map(s => String(s || "").trim()).filter(Boolean))];
-  const badRepo = repos.find(r => !/^[^/\s]+\/[^/\s]+$/.test(r));
+  const repos = [...new Set((draft.selectedRepos || []).map((s) => String(s || "").trim()).filter(Boolean))];
+  const badRepo = repos.find((r) => !/^[^/\s]+\/[^/\s]+$/.test(r));
   if (badRepo) {
     showNotice("Invalid Repo List", `Expected owner/repo format. Invalid entry: ${badRepo}`);
     return;
@@ -534,9 +567,17 @@ export async function createRemediationCampaign() {
   try {
     const res = await api("/api/remediation/campaigns", {
       method: "POST",
-      body: JSON.stringify({ name, mode, max_repos: maxRepos, repos, auto_pr: autoPR, start_now: startNow, latest_only: true }),
+      body: JSON.stringify({
+        name,
+        mode,
+        max_repos: maxRepos,
+        repos,
+        auto_pr: autoPR,
+        start_now: startNow,
+        latest_only: true,
+      }),
     });
-    if (res && res.id) state.remediationSelectedCampaignId = Number(res.id);
+    if (res?.id) state.remediationSelectedCampaignId = Number(res.id);
     showToast({
       title: startNow ? "Campaign Started" : "Campaign Created",
       message: startNow ? "Offline remediation campaign is running." : "Campaign created in draft state.",
@@ -553,7 +594,12 @@ export async function createRemediationCampaign() {
 export async function startRemediationCampaign(id) {
   try {
     await api(`/api/remediation/campaigns/${id}/start`, { method: "POST", body: "{}" });
-    showToast({ title: "Campaign Started", message: `Campaign #${id} is now running.`, kind: "success", timeoutMs: 2800 });
+    showToast({
+      title: "Campaign Started",
+      message: `Campaign #${id} is now running.`,
+      kind: "success",
+      timeoutMs: 2800,
+    });
     state.remediationSelectedCampaignId = id;
     await refreshRemediation();
     await refreshAgentWorkers();
@@ -677,7 +723,12 @@ export async function createPathIgnoreRule(payload) {
       await loadSelectedJobFindings();
       renderScanDetailPage();
     }
-    showToast({ title: "Path Ignore Added", message: "Findings were reloaded with the new ignore rule applied.", kind: "success", timeoutMs: 2600 });
+    showToast({
+      title: "Path Ignore Added",
+      message: "Findings were reloaded with the new ignore rule applied.",
+      kind: "success",
+      timeoutMs: 2600,
+    });
   } catch (err) {
     showNotice("Add Ignore Rule Failed", err.message);
   }
@@ -723,7 +774,14 @@ export async function refreshConfig() {
 
 export async function refreshAll() {
   try {
-    await Promise.all([refreshStatus(), refreshJobs(), refreshCron(), refreshAgent(), refreshAgentWorkers(), refreshRemediation()]);
+    await Promise.all([
+      refreshStatus(),
+      refreshJobs(),
+      refreshCron(),
+      refreshAgent(),
+      refreshAgentWorkers(),
+      refreshRemediation(),
+    ]);
     if (state.selectedJobId) {
       await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
     }

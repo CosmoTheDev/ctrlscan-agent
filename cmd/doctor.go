@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/ai"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/database"
 	"github.com/spf13/cobra"
@@ -66,7 +68,21 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Println("WARN (OpenAI key missing — run 'ctrlscan onboard')")
 		allOK = false
 	default:
-		fmt.Printf("OK (%s / %s)\n", cfg.AI.Provider, cfg.AI.Model)
+		provider, err := ai.New(cfg.AI)
+		if err != nil {
+			fmt.Printf("FAIL (%s)\n", err)
+			allOK = false
+			break
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		reachable := provider.IsAvailable(probeCtx)
+		cancel()
+		if reachable {
+			fmt.Printf("OK (%s / %s)\n", cfg.AI.Provider, cfg.AI.Model)
+		} else {
+			fmt.Printf("WARN (%s / %s configured but endpoint not reachable)\n", cfg.AI.Provider, cfg.AI.Model)
+			allOK = false
+		}
 	}
 
 	// Check GitHub token

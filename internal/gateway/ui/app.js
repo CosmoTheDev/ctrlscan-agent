@@ -19,11 +19,18 @@
   });
 })();
 
+import { connectEvents, refreshAll, scheduleLiveRefresh } from "./js/actions.js";
+import { stopSweep } from "./js/actions.js";
+import {
+  openTriggerModal,
+  wireConfirmModal,
+  wireNoticeModal,
+  wirePathIgnoreModal,
+  wirePromptModal,
+  wireTriggerModal,
+} from "./js/modals.js";
 /* --- ES Module Imports --- */
-import { renderNav, applyRouteFromLocation, setView } from './js/router.js';
-import { connectEvents, refreshAll, scheduleLiveRefresh } from './js/actions.js';
-import { wireNoticeModal, wireConfirmModal, wirePromptModal, wirePathIgnoreModal, wireTriggerModal, openTriggerModal } from './js/modals.js';
-import { stopSweep } from './js/actions.js';
+import { applyRouteFromLocation, renderNav, setView } from "./js/router.js";
 
 /* --- Bootstrap --- */
 async function bootstrap() {

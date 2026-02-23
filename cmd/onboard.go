@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/ai"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -69,13 +70,50 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 
 	// --- Step 1: AI Provider (optional) ---
 	fmt.Println(headerStyle.Render("  Step 1/7 · AI Provider (optional)"))
-	fmt.Println(dimStyle.Render("  Without an AI key you still get full scan results — you just"))
+	fmt.Println(dimStyle.Render("  Without an AI provider you still get full scan results — you just"))
 	fmt.Println(dimStyle.Render("  analyse them yourself. AI is only needed for automatic triage,"))
 	fmt.Println(dimStyle.Render("  code fix generation, and opening pull requests on your behalf.\n"))
+
+	const (
+		aiProviderNone     = "none"
+		aiProviderOpenAI   = "openai"
+		aiProviderOllama   = "ollama"
+		aiProviderLMStudio = "lmstudio"
+	)
+
+	var aiProviderChoice string
+	switch strings.TrimSpace(strings.ToLower(cfg.AI.Provider)) {
+	case "ollama":
+		aiProviderChoice = aiProviderOllama
+	case "openai":
+		if isLikelyLMStudioURL(cfg.AI.BaseURL) {
+			aiProviderChoice = aiProviderLMStudio
+		} else {
+			aiProviderChoice = aiProviderOpenAI
+		}
+	default:
+		aiProviderChoice = aiProviderNone
+	}
 
 	var openAIKey string
 	if cfg.AI.OpenAIKey != "" {
 		openAIKey = cfg.AI.OpenAIKey
+	}
+	var openAIBaseURL string
+	if cfg.AI.BaseURL != "" {
+		openAIBaseURL = cfg.AI.BaseURL
+	}
+	var ollamaURL string = "http://localhost:11434"
+	if cfg.AI.OllamaURL != "" {
+		ollamaURL = cfg.AI.OllamaURL
+	}
+	var lmStudioURL string = "http://127.0.0.1:1234/v1"
+	if isLikelyLMStudioURL(cfg.AI.BaseURL) {
+		lmStudioURL = cfg.AI.BaseURL
+	}
+	var lmStudioAPIKey string
+	if aiProviderChoice == aiProviderLMStudio && cfg.AI.OpenAIKey != "" {
+		lmStudioAPIKey = cfg.AI.OpenAIKey
 	}
 
 	var aiModel string = "gpt-4o"
@@ -98,67 +136,180 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		customAIModel = aiModel
 	}
 
-	aiForm := huh.NewForm(
+	aiProviderForm := huh.NewForm(
 		huh.NewGroup(
-			huh.NewInput().
-				Title("OpenAI API Key (leave blank to skip)").
-				Description("Get one at platform.openai.com → API Keys. Leave blank for scan-only mode.").
-				Placeholder("sk-...  (optional)").
-				EchoMode(huh.EchoModePassword).
-				Value(&openAIKey),
 			huh.NewSelect[string]().
-				Title("Default model").
-				Description("Only used when an API key is set. Choose from common options or enter a custom model ID.").
+				Title("AI provider").
+				Description("Choose OpenAI, a local Ollama server, or LM Studio (OpenAI-compatible local endpoint).").
 				Options(
-					huh.NewOption("gpt-5.1-codex (high quality coding)", "gpt-5.1-codex"),
-					huh.NewOption("gpt-5-codex (coding)", "gpt-5-codex"),
-					huh.NewOption("gpt-5.2", "gpt-5.2"),
-					huh.NewOption("gpt-5.1", "gpt-5.1"),
-					huh.NewOption("gpt-5", "gpt-5"),
-					huh.NewOption("gpt-5-chat-latest", "gpt-5-chat-latest"),
-					huh.NewOption("gpt-4.1", "gpt-4.1"),
-					huh.NewOption("gpt-4o", "gpt-4o"),
-					huh.NewOption("o3", "o3"),
-					huh.NewOption("o1", "o1"),
-					huh.NewOption("gpt-5.1-codex-mini", "gpt-5.1-codex-mini"),
-					huh.NewOption("gpt-5-mini", "gpt-5-mini"),
-					huh.NewOption("gpt-5-nano", "gpt-5-nano"),
-					huh.NewOption("gpt-4.1-mini", "gpt-4.1-mini"),
-					huh.NewOption("gpt-4.1-nano", "gpt-4.1-nano"),
-					huh.NewOption("gpt-4o-mini", "gpt-4o-mini"),
-					huh.NewOption("o4-mini", "o4-mini"),
-					huh.NewOption("o3-mini", "o3-mini"),
-					huh.NewOption("o1-mini", "o1-mini"),
-					huh.NewOption("codex-mini-latest", "codex-mini-latest"),
-					huh.NewOption("Custom model ID…", customModelSentinel),
+					huh.NewOption("Scan-only (disable AI triage/fixes/PR generation)", aiProviderNone),
+					huh.NewOption("OpenAI API", aiProviderOpenAI),
+					huh.NewOption("Ollama (local)", aiProviderOllama),
+					huh.NewOption("LM Studio (local OpenAI-compatible endpoint)", aiProviderLMStudio),
 				).
-				Value(&aiModelChoice),
-			huh.NewInput().
-				Title("Custom model ID (optional)").
-				Description("Only used if 'Custom model ID…' is selected above. Example: gpt-5.1-codex").
-				Placeholder("gpt-5.1-codex").
-				Value(&customAIModel),
+				Value(&aiProviderChoice),
 		),
 	)
-	if err := aiForm.Run(); err != nil {
+	if err := aiProviderForm.Run(); err != nil {
 		return err
 	}
-	if aiModelChoice == customModelSentinel {
-		if strings.TrimSpace(customAIModel) != "" {
-			aiModel = strings.TrimSpace(customAIModel)
+
+	switch aiProviderChoice {
+	case aiProviderOpenAI:
+		aiForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("OpenAI API Key (leave blank to skip)").
+					Description("Get one at platform.openai.com → API Keys. Leave blank for scan-only mode.").
+					Placeholder("sk-...  (optional)").
+					EchoMode(huh.EchoModePassword).
+					Value(&openAIKey),
+				huh.NewSelect[string]().
+					Title("Default model").
+					Description("Only used when an API key is set. Choose from common options or enter a custom model ID.").
+					Options(
+						huh.NewOption("gpt-5.1-codex (high quality coding)", "gpt-5.1-codex"),
+						huh.NewOption("gpt-5-codex (coding)", "gpt-5-codex"),
+						huh.NewOption("gpt-5.2", "gpt-5.2"),
+						huh.NewOption("gpt-5.1", "gpt-5.1"),
+						huh.NewOption("gpt-5", "gpt-5"),
+						huh.NewOption("gpt-5-chat-latest", "gpt-5-chat-latest"),
+						huh.NewOption("gpt-4.1", "gpt-4.1"),
+						huh.NewOption("gpt-4o", "gpt-4o"),
+						huh.NewOption("o3", "o3"),
+						huh.NewOption("o1", "o1"),
+						huh.NewOption("gpt-5.1-codex-mini", "gpt-5.1-codex-mini"),
+						huh.NewOption("gpt-5-mini", "gpt-5-mini"),
+						huh.NewOption("gpt-5-nano", "gpt-5-nano"),
+						huh.NewOption("gpt-4.1-mini", "gpt-4.1-mini"),
+						huh.NewOption("gpt-4.1-nano", "gpt-4.1-nano"),
+						huh.NewOption("gpt-4o-mini", "gpt-4o-mini"),
+						huh.NewOption("o4-mini", "o4-mini"),
+						huh.NewOption("o3-mini", "o3-mini"),
+						huh.NewOption("o1-mini", "o1-mini"),
+						huh.NewOption("codex-mini-latest", "codex-mini-latest"),
+						huh.NewOption("Custom model ID…", customModelSentinel),
+					).
+					Value(&aiModelChoice),
+				huh.NewInput().
+					Title("Custom model ID (optional)").
+					Description("Only used if 'Custom model ID…' is selected above. Example: gpt-5.1-codex").
+					Placeholder("gpt-5.1-codex").
+					Value(&customAIModel),
+				huh.NewInput().
+					Title("Custom OpenAI-compatible base URL (optional)").
+					Description("Leave blank for OpenAI cloud. Set this only for proxies/Azure-compatible endpoints.").
+					Placeholder("https://api.openai.com/v1").
+					Value(&openAIBaseURL),
+			),
+		)
+		if err := aiForm.Run(); err != nil {
+			return err
 		}
-	} else {
-		aiModel = aiModelChoice
-	}
-	if openAIKey != "" {
+		if aiModelChoice == customModelSentinel {
+			if strings.TrimSpace(customAIModel) != "" {
+				aiModel = strings.TrimSpace(customAIModel)
+			}
+		} else {
+			aiModel = aiModelChoice
+		}
+
+		if strings.TrimSpace(openAIKey) != "" {
+			cfg.AI.Provider = "openai"
+			cfg.AI.OpenAIKey = strings.TrimSpace(openAIKey)
+			cfg.AI.Model = aiModel
+			cfg.AI.BaseURL = strings.TrimSpace(openAIBaseURL)
+			reportAIProbe(ctx, cfg.AI, "OpenAI")
+			fmt.Println(successStyle.Render("  AI enabled — OpenAI configured for triage, fixes, and PR creation."))
+			fmt.Println()
+		} else {
+			cfg.AI.Provider = ""
+			cfg.AI.OpenAIKey = ""
+			cfg.AI.BaseURL = ""
+			fmt.Println(dimStyle.Render("  Scan-only mode selected. Add AI later by re-running 'ctrlscan onboard'."))
+			fmt.Println()
+		}
+
+	case aiProviderOllama:
+		ollamaForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Ollama server URL").
+					Description("Local default is http://localhost:11434").
+					Placeholder("http://localhost:11434").
+					Value(&ollamaURL),
+				huh.NewInput().
+					Title("Ollama model name").
+					Description("Must match a model installed in Ollama (for example: llama3.2, qwen2.5-coder:7b).").
+					Placeholder("llama3.2").
+					Value(&aiModel),
+			),
+		)
+		if err := ollamaForm.Run(); err != nil {
+			return err
+		}
+
+		cfg.AI.Provider = "ollama"
+		cfg.AI.OpenAIKey = ""
+		cfg.AI.BaseURL = ""
+		cfg.AI.OllamaURL = strings.TrimSpace(ollamaURL)
+		cfg.AI.Model = strings.TrimSpace(aiModel)
+		if cfg.AI.Model == "" {
+			cfg.AI.Model = "llama3.2"
+		}
+
+		reportAIProbe(ctx, cfg.AI, "Ollama")
+		fmt.Println()
+
+	case aiProviderLMStudio:
+		lmStudioForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("LM Studio OpenAI-compatible base URL").
+					Description("LM Studio local server is typically http://127.0.0.1:1234/v1").
+					Placeholder("http://127.0.0.1:1234/v1").
+					Value(&lmStudioURL),
+				huh.NewInput().
+					Title("Model ID (as exposed by LM Studio)").
+					Description("Use the exact loaded model identifier shown in LM Studio's local server panel.").
+					Placeholder("qwen2.5-coder-7b-instruct").
+					Value(&aiModel),
+				huh.NewInput().
+					Title("API key (optional)").
+					Description("LM Studio usually ignores this. ctrlscan will store a local placeholder if left blank.").
+					Placeholder("lm-studio").
+					EchoMode(huh.EchoModePassword).
+					Value(&lmStudioAPIKey),
+			),
+		)
+		if err := lmStudioForm.Run(); err != nil {
+			return err
+		}
+
+		if strings.TrimSpace(lmStudioAPIKey) == "" {
+			lmStudioAPIKey = "lm-studio"
+		}
 		cfg.AI.Provider = "openai"
-		cfg.AI.OpenAIKey = openAIKey
-		cfg.AI.Model = aiModel
-		fmt.Println(successStyle.Render("  AI enabled — triage, fix generation, and PR creation active.\n"))
-	} else {
+		cfg.AI.OpenAIKey = strings.TrimSpace(lmStudioAPIKey)
+		cfg.AI.BaseURL = strings.TrimSpace(lmStudioURL)
+		cfg.AI.Model = strings.TrimSpace(aiModel)
+		if cfg.AI.BaseURL == "" {
+			cfg.AI.BaseURL = "http://127.0.0.1:1234/v1"
+		}
+
+		reportAIProbe(ctx, cfg.AI, "LM Studio")
+		fmt.Println()
+
+	default:
 		cfg.AI.Provider = ""
 		cfg.AI.OpenAIKey = ""
-		fmt.Println(dimStyle.Render("  Scan-only mode selected. Add a key later by re-running 'ctrlscan onboard'.\n"))
+		cfg.AI.BaseURL = ""
+		fmt.Println(dimStyle.Render("  Scan-only mode selected. Add AI later by re-running 'ctrlscan onboard'."))
+		fmt.Println()
+	}
+
+	if cfg.AI.Provider == "ollama" && cfg.AI.OllamaURL == "" {
+		cfg.AI.OllamaURL = "http://localhost:11434"
 	}
 
 	// --- Step 2: GitHub token ---
@@ -274,9 +425,9 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 
 	// --- Step 5: Agent mode ---
 	fmt.Println(headerStyle.Render("\n  Step 5/7 · Agent Mode"))
-	if cfg.AI.OpenAIKey == "" {
-		fmt.Println(warnStyle.Render("  Note: all modes require an AI key to generate fixes and PRs."))
-		fmt.Println(dimStyle.Render("  Without AI, the agent will discover and scan repos but stop there.\n"))
+	if strings.TrimSpace(cfg.AI.Provider) == "" || cfg.AI.Provider == "none" {
+		fmt.Println(warnStyle.Render("  Note: AI must be configured to generate fixes and PRs."))
+		fmt.Println(dimStyle.Render("  Without AI, the agent will discover and scan repos but stop after scanning.\n"))
 	}
 
 	var agentMode string = "triage"
@@ -406,6 +557,31 @@ func scannerInstallSkipReason(scanner, binDir string) string {
 		}
 	}
 	return ""
+}
+
+func isLikelyLMStudioURL(raw string) bool {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	return strings.Contains(s, "127.0.0.1:1234") || strings.Contains(s, "localhost:1234")
+}
+
+func reportAIProbe(parent context.Context, aiCfg config.AIConfig, label string) {
+	if strings.TrimSpace(aiCfg.Provider) == "" || aiCfg.Provider == "none" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+
+	provider, err := ai.New(aiCfg)
+	if err != nil {
+		fmt.Println(warnStyle.Render(fmt.Sprintf("  %s endpoint check skipped: %v", label, err)))
+		return
+	}
+	if provider.IsAvailable(ctx) {
+		fmt.Println(successStyle.Render(fmt.Sprintf("  %s endpoint reachable — AI enabled.", label)))
+		return
+	}
+	fmt.Println(warnStyle.Render(fmt.Sprintf("  %s endpoint not reachable right now.", label)))
+	fmt.Println(dimStyle.Render("  You can continue setup and start the local server/model later, then run 'ctrlscan doctor'."))
 }
 
 // installScannerTool downloads a scanner binary to binDir.

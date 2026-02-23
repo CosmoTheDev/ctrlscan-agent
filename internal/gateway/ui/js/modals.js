@@ -1,12 +1,14 @@
-import { state, targetMeta } from './state.js';
-import { escapeHtml, setHtml, repoSelectionKey, fmtDate } from './utils.js';
-import { api } from './api.js';
-import { showToast } from './toast.js';
 // Circular imports — all usages are inside function bodies.
 import {
-  createPathIgnoreRule, updatePathIgnoreRule, deletePathIgnoreRule, refreshPathIgnoreRules,
+  createPathIgnoreRule,
+  deletePathIgnoreRule,
+  refreshPathIgnoreRules,
   triggerSweepWithOptions,
-} from './actions.js';
+  updatePathIgnoreRule,
+} from "./actions.js";
+import { api } from "./api.js";
+import { state, targetMeta } from "./state.js";
+import { escapeHtml, fmtDate, repoSelectionKey, setHtml } from "./utils.js";
 
 /* ---- Notice Modal ---- */
 
@@ -97,8 +99,14 @@ export function wirePromptModal() {
     if (e.target.id === "promptModal") hidePromptModal(null);
   });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); hidePromptModal(input.value); }
-    if (e.key === "Escape") { e.preventDefault(); hidePromptModal(null); }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      hidePromptModal(input.value);
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      hidePromptModal(null);
+    }
   });
 }
 
@@ -107,10 +115,10 @@ export function wirePromptModal() {
 function detectPathIgnoreSuggestions() {
   const suggestions = [];
   const seen = new Set();
-  const paths = (state.selectedJobFindings || []).map(f => String(f.file_path || f.package || "")).filter(Boolean);
+  const paths = (state.selectedJobFindings || []).map((f) => String(f.file_path || f.package || "")).filter(Boolean);
   const common = ["vendor/", "test/", "/testdata/", "node_modules/", ".git/"];
   for (const sub of common) {
-    if (paths.some(p => p.toLowerCase().includes(sub.toLowerCase()))) {
+    if (paths.some((p) => p.toLowerCase().includes(sub.toLowerCase()))) {
       if (!seen.has(sub)) {
         seen.add(sub);
         suggestions.push(sub);
@@ -125,9 +133,13 @@ export function renderPathIgnoreModal() {
   const bar = document.getElementById("pathIgnoreSuggestionBar");
   if (!body || !bar) return;
   const rules = state.pathIgnoreRules || [];
-  setHtml(body, state.pathIgnoreRulesLoading
-    ? `<tr><td colspan="5" class="muted">Loading rules…</td></tr>`
-    : (rules.map((r) => `<tr>
+  setHtml(
+    body,
+    state.pathIgnoreRulesLoading
+      ? `<tr><td colspan="5" class="muted">Loading rules…</td></tr>`
+      : rules
+          .map(
+            (r) => `<tr>
         <td><input type="checkbox" data-path-ignore-toggle="${r.id}" ${r.enabled ? "checked" : ""}></td>
         <td><input data-path-ignore-substring="${r.id}" value="${escapeHtml(r.substring || "")}" /></td>
         <td><input data-path-ignore-note="${r.id}" value="${escapeHtml(r.note || "")}" /></td>
@@ -136,39 +148,63 @@ export function renderPathIgnoreModal() {
           <button class="btn btn-secondary" data-path-ignore-save="${r.id}">Save</button>
           <button class="btn btn-danger" data-path-ignore-delete="${r.id}">Delete</button>
         </td>
-      </tr>`).join("") || `<tr><td colspan="5" class="muted">No path ignore rules configured.</td></tr>`));
+      </tr>`
+          )
+          .join("") || `<tr><td colspan="5" class="muted">No path ignore rules configured.</td></tr>`
+  );
 
-  const existingSubs = new Set(rules.map(r => String(r.substring || "").toLowerCase()));
-  const suggestions = detectPathIgnoreSuggestions().filter(s => !existingSubs.has(String(s).toLowerCase()));
-  setHtml(bar, suggestions.length
-    ? suggestions.map(s => `<button class="btn btn-secondary" data-path-ignore-suggest="${escapeHtml(s)}">Suggest: ${escapeHtml(s)}</button>`).join("")
-    : `<span class="muted">Suggestions appear when current findings include common noisy paths (e.g. vendor/, test/).</span>`);
+  const existingSubs = new Set(rules.map((r) => String(r.substring || "").toLowerCase()));
+  const suggestions = detectPathIgnoreSuggestions().filter((s) => !existingSubs.has(String(s).toLowerCase()));
+  setHtml(
+    bar,
+    suggestions.length
+      ? suggestions
+          .map(
+            (s) =>
+              `<button class="btn btn-secondary" data-path-ignore-suggest="${escapeHtml(s)}">Suggest: ${escapeHtml(s)}</button>`
+          )
+          .join("")
+      : `<span class="muted">Suggestions appear when current findings include common noisy paths (e.g. vendor/, test/).</span>`
+  );
 
   body.querySelectorAll("[data-path-ignore-toggle]").forEach((el) => {
     el.addEventListener("change", async () => {
       const id = Number(el.dataset.pathIgnoreToggle);
-      const row = state.pathIgnoreRules.find(r => r.id === id);
+      const row = state.pathIgnoreRules.find((r) => r.id === id);
       if (!row) return;
       await updatePathIgnoreRule(id, { substring: row.substring, note: row.note || "", enabled: !!el.checked });
     });
   });
-  body.querySelectorAll("[data-path-ignore-save]").forEach((btn) => btn.addEventListener("click", async () => {
-    const id = Number(btn.dataset.pathIgnoreSave);
-    const sub = body.querySelector(`[data-path-ignore-substring="${id}"]`)?.value || "";
-    const note = body.querySelector(`[data-path-ignore-note="${id}"]`)?.value || "";
-    const enabled = !!body.querySelector(`[data-path-ignore-toggle="${id}"]`)?.checked;
-    await updatePathIgnoreRule(id, { substring: sub, note, enabled });
-  }));
-  body.querySelectorAll("[data-path-ignore-delete]").forEach((btn) => btn.addEventListener("click", async () => {
-    const id = Number(btn.dataset.pathIgnoreDelete);
-    const row = state.pathIgnoreRules.find(r => r.id === id);
-    if (!(await showConfirm({ title: "Delete Path Ignore Rule", message: `Delete ignore rule "${row?.substring || `#${id}`}"?`, confirmLabel: "Delete" }))) return;
-    await deletePathIgnoreRule(id);
-  }));
-  bar.querySelectorAll("[data-path-ignore-suggest]").forEach((btn) => btn.addEventListener("click", () => {
-    const sub = btn.dataset.pathIgnoreSuggest || "";
-    document.getElementById("pathIgnoreNewSubstring").value = sub;
-  }));
+  body.querySelectorAll("[data-path-ignore-save]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.dataset.pathIgnoreSave);
+      const sub = body.querySelector(`[data-path-ignore-substring="${id}"]`)?.value || "";
+      const note = body.querySelector(`[data-path-ignore-note="${id}"]`)?.value || "";
+      const enabled = !!body.querySelector(`[data-path-ignore-toggle="${id}"]`)?.checked;
+      await updatePathIgnoreRule(id, { substring: sub, note, enabled });
+    })
+  );
+  body.querySelectorAll("[data-path-ignore-delete]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.dataset.pathIgnoreDelete);
+      const row = state.pathIgnoreRules.find((r) => r.id === id);
+      if (
+        !(await showConfirm({
+          title: "Delete Path Ignore Rule",
+          message: `Delete ignore rule "${row?.substring || `#${id}`}"?`,
+          confirmLabel: "Delete",
+        }))
+      )
+        return;
+      await deletePathIgnoreRule(id);
+    })
+  );
+  bar.querySelectorAll("[data-path-ignore-suggest]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const sub = btn.dataset.pathIgnoreSuggest || "";
+      document.getElementById("pathIgnoreNewSubstring").value = sub;
+    })
+  );
 }
 
 export function openPathIgnoreModal() {
@@ -211,7 +247,7 @@ function getPreviewSampleRepos() {
   if (!Array.isArray(targets)) return [];
   const repos = [];
   for (const t of targets) {
-    for (const r of (t.samples || [])) repos.push(r);
+    for (const r of t.samples || []) repos.push(r);
   }
   return repos;
 }
@@ -232,10 +268,13 @@ function reconcileSelectedPreviewRepos() {
 export function renderTriggerChecklist() {
   const root = document.getElementById("targetChecklist");
   const supported = state.agent?.supported_targets || ["own_repos", "watchlist", "cve_search", "all_accessible"];
-  setHtml(root, supported.map((t) => {
-    const meta = targetMeta[t] || { label: t, desc: "" };
-    const checked = state.triggerPlan.targets.includes(t) ? "checked" : "";
-    return `<div class="check-item">
+  setHtml(
+    root,
+    supported
+      .map((t) => {
+        const meta = targetMeta[t] || { label: t, desc: "" };
+        const checked = state.triggerPlan.targets.includes(t) ? "checked" : "";
+        return `<div class="check-item">
       <label>
         <input type="checkbox" data-target="${t}" ${checked}>
         <span class="label-stack">
@@ -244,14 +283,16 @@ export function renderTriggerChecklist() {
         </span>
       </label>
     </div>`;
-  }).join(""));
+      })
+      .join("")
+  );
   root.querySelectorAll("input[type='checkbox'][data-target]").forEach((cb) => {
     cb.addEventListener("change", () => {
       const t = cb.dataset.target;
       if (cb.checked) {
         if (!state.triggerPlan.targets.includes(t)) state.triggerPlan.targets.push(t);
       } else {
-        state.triggerPlan.targets = state.triggerPlan.targets.filter(x => x !== t);
+        state.triggerPlan.targets = state.triggerPlan.targets.filter((x) => x !== t);
       }
       if (state.triggerPlan.targets.length === 0) {
         state.triggerPlan.selectedRepoMap = {};
@@ -269,7 +310,10 @@ export function renderTriggerPreview() {
     return;
   }
   if (state.triggerPlan.targets.length === 0) {
-    setHtml(root, `<div class="muted">No targets selected. Select one or more targets to preview and choose repositories.</div>`);
+    setHtml(
+      root,
+      `<div class="muted">No targets selected. Select one or more targets to preview and choose repositories.</div>`
+    );
     return;
   }
   if (state.triggerPreview.error) {
@@ -283,24 +327,35 @@ export function renderTriggerPreview() {
   }
   const previewRepos = getPreviewSampleRepos();
   const selectedCount = getSelectedPreviewRepos().length;
-  const sectionsHtml = data.targets.map((t) => `
+  const sectionsHtml = data.targets
+    .map(
+      (t) => `
     <div class="preview-section">
-      <h4>${escapeHtml((targetMeta[t.target]?.label) || t.target)}</h4>
-      <div class="preview-meta">${t.repo_count || 0} repositories visible${(t.samples && t.samples.length < (t.repo_count || 0)) ? ` (showing ${t.samples.length})` : ""}</div>
+      <h4>${escapeHtml(targetMeta[t.target]?.label || t.target)}</h4>
+      <div class="preview-meta">${t.repo_count || 0} repositories visible${t.samples && t.samples.length < (t.repo_count || 0) ? ` (showing ${t.samples.length})` : ""}</div>
       <div class="preview-list">
-        ${(t.samples || []).slice(0, 12).map((r) => `
+        ${
+          (t.samples || [])
+            .slice(0, 12)
+            .map(
+              (r) => `
           <label class="preview-item preview-item-selectable">
             <div class="preview-item-row">
               <input type="checkbox" data-preview-repo="${escapeHtml(repoSelectionKey(r))}" ${state.triggerPlan.selectedRepoMap[repoSelectionKey(r)] ? "checked" : ""}>
               <div class="title">${escapeHtml(r.full_name)}</div>
             </div>
-            <div class="sub">${escapeHtml(r.provider)} • ${escapeHtml(r.host || "")}${r.language ? ` • ${escapeHtml(r.language)}` : ""}${(r.stars ?? 0) > 0 ? ` • ★ ${r.stars}` : ""}${r.private ? ` • private` : ""}</div>
+            <div class="sub">${escapeHtml(r.provider)} • ${escapeHtml(r.host || "")}${r.language ? ` • ${escapeHtml(r.language)}` : ""}${(r.stars ?? 0) > 0 ? ` • ★ ${r.stars}` : ""}${r.private ? " • private" : ""}</div>
           </label>
-        `).join("") || `<div class="muted">No repositories matched this target.</div>`}
+        `
+            )
+            .join("") || `<div class="muted">No repositories matched this target.</div>`
+        }
       </div>
-      ${(t.errors && t.errors.length) ? `<div class="preview-errors">${escapeHtml(t.errors.join(" | "))}</div>` : ""}
+      ${t.errors?.length ? `<div class="preview-errors">${escapeHtml(t.errors.join(" | "))}</div>` : ""}
     </div>
-  `).join("");
+  `
+    )
+    .join("");
   const toolbarHtml = `
     <div class="toolbar preview-toolbar">
       <button id="previewReposSelectAll" class="btn btn-secondary" ${previewRepos.length === 0 ? "disabled" : ""}>Select All Shown</button>

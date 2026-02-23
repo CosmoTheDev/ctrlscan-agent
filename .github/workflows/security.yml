@@ -82,7 +82,59 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION="8.24.3"
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp
+          install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
       - name: Gitleaks scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: gitleaks
+        shell: bash
+        run: |
+          set +e
+          mkdir -p reports
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.forced }}" = "true" ]; then
+            echo "Forced push detected; using filesystem scan fallback (no git diff range)."
+            gitleaks dir . \
+              --redact \
+              --exit-code 2 \
+              --report-format sarif \
+              --report-path reports/gitleaks.sarif
+          else
+            gitleaks git . \
+              --redact \
+              --exit-code 2 \
+              --report-format sarif \
+              --report-path reports/gitleaks.sarif
+          fi
+          ec=$?
+          echo "exit_code=$ec" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload Gitleaks SARIF
+        if: ${{ always() && hashFiles('reports/gitleaks.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: reports/gitleaks.sarif
+
+      - name: Fail on leaks / scan errors
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          ec="${{ steps.gitleaks.outputs.exit_code }}"
+          # gitleaks returns 0 = no leaks, 1 = error, 2 = leaks found
+          if [ "$ec" = "0" ]; then
+            exit 0
+          fi
+          if [ "$ec" = "2" ]; then
+            echo "::error::Gitleaks detected secrets."
+            exit 1
+          fi
+          echo "::error::Gitleaks scan failed (exit code $ec)."
+          exit 1

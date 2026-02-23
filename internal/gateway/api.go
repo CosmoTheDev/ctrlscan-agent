@@ -28,6 +28,7 @@ func buildHandler(gw *Gateway) http.Handler {
 	mux.HandleFunc("GET /", gw.handleRoot)
 	mux.HandleFunc("GET /ui", gw.handleUIIndex)
 	mux.HandleFunc("GET /ui/", gw.handleUIIndex)
+	mux.HandleFunc("GET /ui/{path...}", gw.handleUIIndex)
 	mux.HandleFunc("GET /ui/app.css", gw.handleUIAsset)
 	mux.HandleFunc("GET /ui/app.js", gw.handleUIAsset)
 

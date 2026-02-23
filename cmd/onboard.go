@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -75,10 +76,11 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	fmt.Println(dimStyle.Render("  code fix generation, and opening pull requests on your behalf.\n"))
 
 	const (
-		aiProviderNone     = "none"
-		aiProviderOpenAI   = "openai"
-		aiProviderOllama   = "ollama"
-		aiProviderLMStudio = "lmstudio"
+		aiProviderNone      = "none"
+		aiProviderOpenAI    = "openai"
+		aiProviderOllama    = "ollama"
+		aiProviderLMStudio  = "lmstudio"
+		customModelSentinel = "__custom__"
 	)
 
 	var aiProviderChoice string
@@ -120,7 +122,6 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	if cfg.AI.Model != "" {
 		aiModel = cfg.AI.Model
 	}
-	const customModelSentinel = "__custom__"
 	var aiModelChoice string
 	switch aiModel {
 	case "gpt-5.2", "gpt-5.1", "gpt-5.1-codex", "gpt-5", "gpt-5-codex", "gpt-5-chat-latest",
@@ -231,28 +232,101 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		}
 
 	case aiProviderOllama:
-		ollamaForm := huh.NewForm(
+		ollamaURLForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewInput().
 					Title("Ollama server URL").
 					Description("Local default is http://localhost:11434").
 					Placeholder("http://localhost:11434").
 					Value(&ollamaURL),
-				huh.NewInput().
-					Title("Ollama model name").
-					Description("Must match a model installed in Ollama (for example: llama3.2, qwen2.5-coder:7b).").
-					Placeholder("llama3.2").
-					Value(&aiModel),
 			),
 		)
-		if err := ollamaForm.Run(); err != nil {
+		if err := ollamaURLForm.Run(); err != nil {
 			return err
+		}
+		ollamaURL = strings.TrimSpace(ollamaURL)
+		if ollamaURL == "" {
+			ollamaURL = "http://localhost:11434"
+		}
+
+		ollamaModels, modelErr := fetchOllamaModelNames(ctx, ollamaURL)
+		if modelErr == nil && len(ollamaModels) > 0 {
+			var ollamaModelChoice string
+			foundCurrent := false
+			for _, name := range ollamaModels {
+				if name == aiModel {
+					foundCurrent = true
+					break
+				}
+			}
+			if foundCurrent {
+				ollamaModelChoice = aiModel
+			} else {
+				ollamaModelChoice = ollamaModels[0]
+			}
+			ollamaOptions := make([]huh.Option[string], 0, len(ollamaModels)+1)
+			for _, name := range ollamaModels {
+				ollamaOptions = append(ollamaOptions, huh.NewOption(name, name))
+			}
+			ollamaOptions = append(ollamaOptions, huh.NewOption("Custom model name…", customModelSentinel))
+			if !foundCurrent && strings.TrimSpace(aiModel) != "" {
+				// Preserve existing manual model choices not currently installed.
+				ollamaModelChoice = customModelSentinel
+				customAIModel = aiModel
+			}
+
+			fmt.Println(successStyle.Render(fmt.Sprintf("  Detected %d Ollama model(s) on %s.", len(ollamaModels), ollamaURL)))
+			ollamaModelForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("Choose Ollama model").
+						Description("Select an installed model or enter one manually.").
+						Options(ollamaOptions...).
+						Value(&ollamaModelChoice),
+					huh.NewInput().
+						Title("Custom Ollama model name (optional)").
+						Description("Only used if 'Custom model name…' is selected above.").
+						Placeholder("qwen2.5-coder:7b").
+						Value(&customAIModel),
+				),
+			)
+			if err := ollamaModelForm.Run(); err != nil {
+				return err
+			}
+			if ollamaModelChoice == customModelSentinel {
+				if strings.TrimSpace(customAIModel) != "" {
+					aiModel = strings.TrimSpace(customAIModel)
+				}
+			} else {
+				aiModel = ollamaModelChoice
+			}
+		} else {
+			if modelErr != nil {
+				fmt.Println(warnStyle.Render(fmt.Sprintf("  Could not fetch Ollama model list: %v", modelErr)))
+			} else {
+				fmt.Println(warnStyle.Render("  Ollama is reachable but no models are installed yet."))
+			}
+			fmt.Println(dimStyle.Render("  Tip: run `ollama pull <model>` first, or type a model name to configure now."))
+			fmt.Println()
+
+			ollamaModelInputForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title("Ollama model name").
+						Description("Must match a model installed in Ollama (for example: llama3.2, qwen2.5-coder:7b).").
+						Placeholder("llama3.2").
+						Value(&aiModel),
+				),
+			)
+			if err := ollamaModelInputForm.Run(); err != nil {
+				return err
+			}
 		}
 
 		cfg.AI.Provider = "ollama"
 		cfg.AI.OpenAIKey = ""
 		cfg.AI.BaseURL = ""
-		cfg.AI.OllamaURL = strings.TrimSpace(ollamaURL)
+		cfg.AI.OllamaURL = ollamaURL
 		cfg.AI.Model = strings.TrimSpace(aiModel)
 		if cfg.AI.Model == "" {
 			cfg.AI.Model = "llama3.2"
@@ -582,6 +656,61 @@ func reportAIProbe(parent context.Context, aiCfg config.AIConfig, label string) 
 	}
 	fmt.Println(warnStyle.Render(fmt.Sprintf("  %s endpoint not reachable right now.", label)))
 	fmt.Println(dimStyle.Render("  You can continue setup and start the local server/model later, then run 'ctrlscan doctor'."))
+}
+
+type ollamaTagsResponse struct {
+	Models []struct {
+		Name string `json:"name"`
+	} `json:"models"`
+}
+
+func fetchOllamaModelNames(parent context.Context, baseURL string) ([]string, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return nil, fmt.Errorf("GET /api/tags returned %d (%s)", resp.StatusCode, msg)
+	}
+
+	var payload ollamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("parsing /api/tags response: %w", err)
+	}
+
+	seen := make(map[string]struct{}, len(payload.Models))
+	names := make([]string, 0, len(payload.Models))
+	for _, m := range payload.Models {
+		name := strings.TrimSpace(m.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // installScannerTool downloads a scanner binary to binDir.

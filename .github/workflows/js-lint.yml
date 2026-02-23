@@ -1,0 +1,45 @@
+name: JS Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "internal/gateway/ui/**"
+      - "package.json"
+      - "package-lock.json"
+      - "biome.json"
+  pull_request:
+    branches: [main]
+    paths:
+      - "internal/gateway/ui/**"
+      - "package.json"
+      - "package-lock.json"
+      - "biome.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  js-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Biome check
+        run: node_modules/.bin/biome check internal/gateway/ui/js/ internal/gateway/ui/app.js
+
+      - name: Bundle check (esbuild)
+        run: node_modules/.bin/esbuild internal/gateway/ui/app.js --bundle --platform=browser --format=esm 1>/dev/null

@@ -87,18 +87,19 @@ jobs:
             echo "--- Scanning: $f ---"
             octoscan scan "$f" || true
           done
-          # Collect per-file SARIF
+          # Collect per-file SARIF (only keep files with a valid .runs array)
           for f in .github/workflows/*.yml .github/workflows/*.yaml; do
             [ -f "$f" ] || continue
             tmpf="/tmp/octoscan-sarif/$(basename "$f").sarif"
             octoscan scan --format sarif "$f" > "$tmpf" 2>/dev/null || true
-            # Drop files that aren't valid JSON
-            jq empty "$tmpf" 2>/dev/null || rm -f "$tmpf"
+            jq -e 'type == "object" and (.runs | type == "array")' "$tmpf" > /dev/null 2>&1 || rm -f "$tmpf"
           done
           # Merge valid SARIF files
+          shopt -s nullglob
           valid=(/tmp/octoscan-sarif/*.sarif)
-          if [ -e "${valid[0]}" ]; then
-            jq -s '.[0] as $base | $base | .runs[0].results = [.[] | .runs[]?.results[]?]' "${valid[@]}" > reports/octoscan.sarif
+          shopt -u nullglob
+          if [ ${#valid[@]} -gt 0 ]; then
+            jq -s '.[0] as $base | $base | .runs[0].results = [.[] | .runs[0]?.results[]?]' "${valid[@]}" > reports/octoscan.sarif
           fi
 
       - name: Upload octoscan SARIF

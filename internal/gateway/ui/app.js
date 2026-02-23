@@ -67,6 +67,13 @@ function escapeHtml(v) {
     .replace(/"/g, "&quot;");
 }
 
+function setHtml(el, html) {
+  if (!el) return;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  el.replaceChildren(range.createContextualFragment(String(html ?? "")));
+}
+
 function repoSelectionKey(r) {
   return [r.provider || "", r.host || "", r.owner || "", r.name || ""].join("|").toLowerCase();
 }
@@ -230,7 +237,7 @@ function setView(id, opts = {}) {
 
 function renderNav() {
   const nav = document.getElementById("nav");
-  nav.innerHTML = views.filter(v => !v.hidden).map(v => `<button data-view="${v.id}" class="${state.view === v.id ? "active" : ""}">${escapeHtml(v.title)}</button>`).join("");
+  setHtml(nav, views.filter(v => !v.hidden).map(v => `<button data-view="${v.id}" class="${state.view === v.id ? "active" : ""}">${escapeHtml(v.title)}</button>`).join(""));
   nav.querySelectorAll("button").forEach(btn => btn.addEventListener("click", () => setView(btn.dataset.view, { pushHistory: true })));
 }
 
@@ -260,10 +267,10 @@ function showToast({ title, message = "", kind = "info", timeoutMs = 3500 } = {}
   if (!stack) return;
   const el = document.createElement("div");
   el.className = `toast toast-${kind}`;
-  el.innerHTML = `
+  setHtml(el, `
     <div class="toast-title">${escapeHtml(title || "Notice")}</div>
     ${message ? `<div class="toast-body">${escapeHtml(message)}</div>` : ""}
-  `;
+  `);
   stack.prepend(el);
   const remove = () => {
     if (el.parentNode) el.parentNode.removeChild(el);
@@ -398,7 +405,7 @@ function renderOverview() {
   const st = state.status || {};
   const sum = state.jobSummary || {};
   const last = state.jobs[0];
-  root.innerHTML = `
+  setHtml(root, `
     <div class="grid cols-4">
       <div class="card"><div class="metric-label">Agent</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Ready" : "Idle")}</div></div>
       <div class="card"><div class="metric-label">Queued Repos</div><div class="metric-value">${st.queued_repos ?? 0}</div></div>
@@ -438,7 +445,7 @@ function renderOverview() {
     <div style="margin-top:14px">
       ${renderSweepSummaryCard()}
     </div>
-  `;
+  `);
   root.querySelector("#ovTrigger")?.addEventListener("click", openTriggerModal);
   root.querySelector("#ovStop")?.addEventListener("click", stopSweep);
   root.querySelector("#ovPauseResume")?.addEventListener("click", async () => {
@@ -473,7 +480,7 @@ function renderScans() {
   const selectedJob = state.selectedJob;
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
-  root.innerHTML = `
+  setHtml(root, `
     <div class="stack">
       ${renderSweepSummaryCard()}
       <div class="split">
@@ -558,7 +565,7 @@ function renderScans() {
       </div>
       </div>
     </div>
-  `;
+  `);
   root.querySelector("#scansRefresh")?.addEventListener("click", refreshJobs);
   root.querySelector("#scansPrevPage")?.addEventListener("click", () => {
     state.scansPage = Math.max(1, (state.scansPage || 1) - 1);
@@ -613,7 +620,7 @@ function renderScanDetailPage() {
   const root = document.getElementById("view-scan-detail");
   const selectedJob = state.selectedJob;
   if (!selectedJob) {
-    root.innerHTML = `<div class="card"><div class="muted">No scan selected. Open a job from the Scans page.</div></div>`;
+    setHtml(root, `<div class="card"><div class="muted">No scan selected. Open a job from the Scans page.</div></div>`);
     return;
   }
   const scanners = state.selectedJobScanners || [];
@@ -646,7 +653,7 @@ function renderScanDetailPage() {
   const fixes = state.selectedJobFixes || [];
   const aiEnabled = !!state.agent?.ai_enabled;
   const mode = state.agent?.mode || "triage";
-  root.innerHTML = `
+  setHtml(root, `
     <div class="scan-detail-layout">
       <div class="card">
         <div class="sticky-actions">
@@ -758,7 +765,7 @@ function renderScanDetailPage() {
         `}
       </div>
     </div>
-  `;
+  `);
   root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
     if (state.selectedJobId) await selectJob(state.selectedJobId);
@@ -799,7 +806,7 @@ function renderScanDetailPage() {
 function renderCron() {
   const root = document.getElementById("view-cron");
   const rows = state.schedules || [];
-  root.innerHTML = `
+  setHtml(root, `
     <div class="card">
       <h3>Create Schedule</h3>
       <div class="form-grid">
@@ -834,7 +841,7 @@ function renderCron() {
         </table>
       </div>
     </div>
-  `;
+  `);
   root.querySelector("#cronRefresh")?.addEventListener("click", refreshCron);
   root.querySelector("#cronCreate")?.addEventListener("click", createCron);
   root.querySelectorAll("[data-action='trigger']").forEach(btn => btn.addEventListener("click", () => triggerCron(Number(btn.dataset.id))));
@@ -845,7 +852,7 @@ function renderAgents() {
   const root = document.getElementById("view-agents");
   const st = state.status || {};
   const agent = state.agent || {};
-  root.innerHTML = `
+  setHtml(root, `
     <div class="grid cols-3">
       <div class="card"><div class="metric-label">Runtime</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Running" : "Idle")}</div></div>
       <div class="card"><div class="metric-label">Scan Workers</div><div class="metric-value">${st.workers ?? state.agent?.status?.workers ?? 0}</div></div>
@@ -871,7 +878,7 @@ function renderAgents() {
         <div class="footer-note">Applies to future sweeps and persists to config.</div>
       </div>
     </div>
-  `;
+  `);
   root.querySelector("#agentsTrigger")?.addEventListener("click", openTriggerModal);
   root.querySelector("#agentsStop")?.addEventListener("click", stopSweep);
   root.querySelector("#agentsPause")?.addEventListener("click", async () => setPaused(!(state.status && state.status.paused)));
@@ -887,7 +894,7 @@ function renderAgents() {
 
 function renderConfig() {
   const root = document.getElementById("view-config");
-  root.innerHTML = `
+  setHtml(root, `
     <div class="card">
       <h3>Gateway Config</h3>
       <div class="muted">Path: ${escapeHtml(state.configPath || "default")}</div>
@@ -898,7 +905,7 @@ function renderConfig() {
       </div>
       <textarea id="cfgEditor" class="code-edit"></textarea>
     </div>
-  `;
+  `);
   const editor = root.querySelector("#cfgEditor");
   editor.value = state.config ? JSON.stringify(state.config, null, 2) : "{\n}";
   root.querySelector("#cfgRefresh").addEventListener("click", refreshConfig);
@@ -916,7 +923,7 @@ function renderConfig() {
 
 function renderEvents() {
   const root = document.getElementById("view-events");
-  root.innerHTML = `
+  setHtml(root, `
     <div class="card">
       <div class="toolbar">
         <button id="eventsClear" class="btn btn-secondary">Clear</button>
@@ -924,7 +931,7 @@ function renderEvents() {
       </div>
       <pre class="code" id="eventsLog">${escapeHtml(state.events.map(e => `${e.at} ${e.type} ${JSON.stringify(e.payload ?? {})}`).join("\n"))}</pre>
     </div>
-  `;
+  `);
   root.querySelector("#eventsClear")?.addEventListener("click", () => {
     state.events = [];
     renderEvents();
@@ -1365,7 +1372,7 @@ function getDefaultTriggerTargets() {
 function renderTriggerChecklist() {
   const root = document.getElementById("targetChecklist");
   const supported = state.agent?.supported_targets || ["own_repos", "watchlist", "cve_search", "all_accessible"];
-  root.innerHTML = supported.map((t) => {
+  setHtml(root, supported.map((t) => {
     const meta = targetMeta[t] || { label: t, desc: "" };
     const checked = state.triggerPlan.targets.includes(t) ? "checked" : "";
     return `<div class="check-item">
@@ -1377,7 +1384,7 @@ function renderTriggerChecklist() {
         </span>
       </label>
     </div>`;
-  }).join("");
+  }).join(""));
   root.querySelectorAll("input[type='checkbox'][data-target]").forEach((cb) => {
     cb.addEventListener("change", () => {
       const t = cb.dataset.target;
@@ -1398,25 +1405,25 @@ function renderTriggerPreview() {
   const root = document.getElementById("triggerPreviewBody");
   if (!root) return;
   if (state.triggerPreview.loading) {
-    root.innerHTML = `<div class="muted">Loading preview…</div>`;
+    setHtml(root, `<div class="muted">Loading preview…</div>`);
     return;
   }
   if (state.triggerPlan.targets.length === 0) {
-    root.innerHTML = `<div class="muted">No targets selected. Select one or more targets to preview and choose repositories.</div>`;
+    setHtml(root, `<div class="muted">No targets selected. Select one or more targets to preview and choose repositories.</div>`);
     return;
   }
   if (state.triggerPreview.error) {
-    root.innerHTML = `<div class="preview-errors">${escapeHtml(state.triggerPreview.error)}</div>`;
+    setHtml(root, `<div class="preview-errors">${escapeHtml(state.triggerPreview.error)}</div>`);
     return;
   }
   const data = state.triggerPreview.data;
   if (!data || !Array.isArray(data.targets)) {
-    root.innerHTML = `<div class="muted">Preview unavailable.</div>`;
+    setHtml(root, `<div class="muted">Preview unavailable.</div>`);
     return;
   }
   const previewRepos = getPreviewSampleRepos();
   const selectedCount = getSelectedPreviewRepos().length;
-  root.innerHTML = data.targets.map((t) => `
+  const sectionsHtml = data.targets.map((t) => `
     <div class="preview-section">
       <h4>${escapeHtml((targetMeta[t.target]?.label) || t.target)}</h4>
       <div class="preview-meta">${t.repo_count || 0} repositories visible${(t.samples && t.samples.length < (t.repo_count || 0)) ? ` (showing ${t.samples.length})` : ""}</div>
@@ -1434,13 +1441,14 @@ function renderTriggerPreview() {
       ${(t.errors && t.errors.length) ? `<div class="preview-errors">${escapeHtml(t.errors.join(" | "))}</div>` : ""}
     </div>
   `).join("");
-  root.innerHTML = `
+  const toolbarHtml = `
     <div class="toolbar preview-toolbar">
       <button id="previewReposSelectAll" class="btn btn-secondary" ${previewRepos.length === 0 ? "disabled" : ""}>Select All Shown</button>
       <button id="previewReposSelectNone" class="btn btn-secondary" ${selectedCount === 0 ? "disabled" : ""}>Select None</button>
       <span class="muted">${selectedCount} repo${selectedCount === 1 ? "" : "s"} selected${previewRepos.length ? ` (from ${previewRepos.length} shown)` : ""}. If any are selected, this trigger scans only those repos.</span>
     </div>
-  ` + root.innerHTML;
+  `;
+  setHtml(root, toolbarHtml + sectionsHtml);
   root.querySelectorAll("input[type='checkbox'][data-preview-repo]").forEach((cb) => {
     cb.addEventListener("change", () => {
       const key = cb.dataset.previewRepo;

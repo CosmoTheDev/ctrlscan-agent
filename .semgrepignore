@@ -1,8 +1,3 @@
-# Temporary exclusion to keep dogfooding self-scan actionable.
-# The local gateway dashboard currently renders many sections via template
-# strings + innerHTML. Refactor to DOM-safe builders/sanitization, then remove.
-internal/gateway/ui/app.js
-
 # Workflow hardening is covered by the dedicated Actions Security workflows.
 # Exclude workflow YAMLs from the product dogfooding scan to avoid duplicate
 # policy failures and keep self-scan focused on ctrlscan code/runtime behavior.

@@ -9,15 +9,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
 
 concurrency:
   group: ctrlscan-self-scan-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
-env:
-  GO_VERSION: "1.25.7"
 
 jobs:
   build:
@@ -25,19 +20,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: "1.25.7"
           cache: true
 
       - name: Build
         run: make build
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ctrlscan-linux-amd64
           path: ctrlscan
@@ -47,18 +44,24 @@ jobs:
     name: Ctrlscan Self Scan
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: "1.25.7"
           cache: true
 
       - name: Download ctrlscan binary
-        uses: actions/download-artifact@v4.1.3
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ctrlscan-linux-amd64
 
@@ -87,9 +90,11 @@ jobs:
 
       - name: Install scanner tools
         shell: bash
+        env:
+          BIN_DIR: ${{ steps.paths.outputs.bin_dir }}
         run: |
           set -euo pipefail
-          bash ./install/tools.sh --bin-dir "${{ steps.paths.outputs.bin_dir }}"
+          bash ./install/tools.sh --bin-dir "$BIN_DIR"
           echo "=== Tool Versions ==="
           syft version || true
           grype version || true
@@ -168,16 +173,22 @@ jobs:
         id: scan
         if: steps.target.outputs.skip_scan != 'true'
         shell: bash
+        env:
+          CTRLSCAN_HOME: ${{ steps.paths.outputs.home_dir }}
+          CTRLSCAN_CFG: ${{ steps.paths.outputs.cfg_path }}
+          SCAN_REPO_URL: ${{ steps.target.outputs.scan_repo_url }}
+          SCAN_BRANCH: ${{ steps.target.outputs.scan_branch }}
+          REPORT_DIR: ${{ steps.paths.outputs.report_dir }}
         run: |
           set +e
-          mkdir -p "${{ steps.paths.outputs.report_dir }}"
-          HOME="${{ steps.paths.outputs.home_dir }}" \
-          ./ctrlscan --config "${{ steps.paths.outputs.cfg_path }}" scan \
-            --repo "${{ steps.target.outputs.scan_repo_url }}" \
-            --branch "${{ steps.target.outputs.scan_branch }}" \
+          mkdir -p "$REPORT_DIR"
+          HOME="$CTRLSCAN_HOME" \
+          ./ctrlscan --config "$CTRLSCAN_CFG" scan \
+            --repo "$SCAN_REPO_URL" \
+            --branch "$SCAN_BRANCH" \
             --scanners grype,opengrep,trufflehog,trivy \
             --parallel \
-            2>&1 | tee "${{ steps.paths.outputs.report_dir }}/ctrlscan-scan.log"
+            2>&1 | tee "$REPORT_DIR/ctrlscan-scan.log"
           scan_exit=${PIPESTATUS[0]}
           echo "scan_exit=${scan_exit}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -186,6 +197,12 @@ jobs:
         id: parse
         if: always()
         shell: bash
+        env:
+          DB_PATH: ${{ steps.paths.outputs.db_path }}
+          REPORT_DIR: ${{ steps.paths.outputs.report_dir }}
+          SKIP_SCAN: ${{ steps.target.outputs.skip_scan }}
+          SKIP_REASON: ${{ steps.target.outputs.skip_reason }}
+          SCAN_EXIT: ${{ steps.scan.outputs.scan_exit }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -204,12 +221,8 @@ jobs:
             "job_status": "skipped" if skip_scan else "unknown",
             "repo": "",
             "branch": "",
-            "critical": 0,
-            "high": 0,
-            "medium": 0,
-            "low": 0,
-            "policy_critical": 0,
-            "policy_high": 0,
+            "critical": 0, "high": 0, "medium": 0, "low": 0,
+            "policy_critical": 0, "policy_high": 0,
             "ignored_high_findings": 0,
             "scanner_counts": {"grype": 0, "opengrep": 0, "trufflehog": 0, "trivy": 0},
             "total_scanner_findings": 0,
@@ -228,9 +241,7 @@ jobs:
             cur.execute("""
               SELECT id, owner, repo, branch, status,
                      findings_critical, findings_high, findings_medium, findings_low
-              FROM scan_jobs
-              ORDER BY id DESC
-              LIMIT 1
+              FROM scan_jobs ORDER BY id DESC LIMIT 1
             """)
             row = cur.fetchone()
             if row:
@@ -245,30 +256,21 @@ jobs:
 
               cur.execute("""
                 SELECT scanner_name, COALESCE(SUM(findings_count), 0) AS n
-                FROM scan_job_scanners
-                WHERE scan_job_id = ?
+                FROM scan_job_scanners WHERE scan_job_id = ?
                 GROUP BY scanner_name
               """, (row["id"],))
               for r in cur.fetchall():
                 summary["scanner_counts"][r["scanner_name"]] = int(r["n"] or 0)
               summary["total_scanner_findings"] = sum(summary["scanner_counts"].values())
 
-              # Policy-specific severity counts can exclude known scanner false positives
-              # while preserving raw rollups in the comment and artifacts.
               summary["policy_critical"] = summary["critical"]
               summary["policy_high"] = summary["high"]
 
-              cur.execute("""
-                SELECT vulnerability_id, package_name, severity
-                FROM sca_vulns
-                WHERE scan_job_id = ?
-              """, (row["id"],))
+              cur.execute("SELECT vulnerability_id, package_name, severity FROM sca_vulns WHERE scan_job_id = ?", (row["id"],))
               for vuln in cur.fetchall():
                 vuln_id = (vuln["vulnerability_id"] or "").strip()
                 pkg = (vuln["package_name"] or "").strip()
                 sev = (vuln["severity"] or "").strip().lower()
-                # grype currently normalizes GitHub Action versions like v4.1.3 to v4
-                # for some action refs and may report a false-positive high here.
                 if vuln_id == "GHSA-cxww-7g56-2vh6" and pkg == "actions/download-artifact" and sev == "high":
                   summary["ignored_high_findings"] += 1
                   if summary["policy_high"] > 0:
@@ -298,12 +300,9 @@ jobs:
               ("scan_exit", str(summary["scan_exit"])),
               ("job_id", "" if summary["job_id"] is None else str(summary["job_id"])),
               ("job_status", summary["job_status"]),
-              ("repo", summary["repo"]),
-              ("branch", summary["branch"]),
-              ("critical", str(summary["critical"])),
-              ("high", str(summary["high"])),
-              ("medium", str(summary["medium"])),
-              ("low", str(summary["low"])),
+              ("repo", summary["repo"]), ("branch", summary["branch"]),
+              ("critical", str(summary["critical"])), ("high", str(summary["high"])),
+              ("medium", str(summary["medium"])), ("low", str(summary["low"])),
               ("policy_critical", str(summary["policy_critical"])),
               ("policy_high", str(summary["policy_high"])),
               ("ignored_high_findings", str(summary["ignored_high_findings"])),
@@ -316,17 +315,15 @@ jobs:
             ]:
               f.write(f"{key}={value}\n")
           PY
-        env:
-          DB_PATH: ${{ steps.paths.outputs.db_path }}
-          REPORT_DIR: ${{ steps.paths.outputs.report_dir }}
-          SKIP_SCAN: ${{ steps.target.outputs.skip_scan }}
-          SKIP_REASON: ${{ steps.target.outputs.skip_reason }}
-          SCAN_EXIT: ${{ steps.scan.outputs.scan_exit }}
 
       - name: Export finding details from SQLite
         id: details
         if: ${{ always() && steps.parse.outputs.skipped != 'true' && steps.parse.outputs.job_id != '' }}
         shell: bash
+        env:
+          DB_PATH: ${{ steps.paths.outputs.db_path }}
+          REPORT_DIR: ${{ steps.paths.outputs.report_dir }}
+          JOB_ID: ${{ steps.parse.outputs.job_id }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -361,223 +358,28 @@ jobs:
               except sqlite3.OperationalError:
                   return
 
-          add(
-              "sast_findings",
-              "sast",
+          add("sast_findings", "sast",
               "id, severity, check_id, file_path, line_start, message, status",
-              lambda r: {
-                  "kind": "sast",
-                  "severity": r["severity"] or "",
-                  "rule": r["check_id"] or "",
+              lambda r: {"kind": "sast", "severity": r["severity"] or "", "rule": r["check_id"] or "",
                   "location": f'{r["file_path"]}:{r["line_start"]}' if (r["file_path"] or "") else "",
-                  "title": (r["message"] or "")[:200],
-                  "status": r["status"] or "",
-              },
-          )
-          add(
-              "sca_vulns",
-              "sca",
+                  "title": (r["message"] or "")[:200], "status": r["status"] or ""})
+          add("sca_vulns", "sca",
               "id, severity, vulnerability_id, package_name, version_affected, version_remediation, status",
-              lambda r: {
-                  "kind": "sca",
-                  "severity": r["severity"] or "",
-                  "rule": r["vulnerability_id"] or "",
+              lambda r: {"kind": "sca", "severity": r["severity"] or "", "rule": r["vulnerability_id"] or "",
                   "location": (r["package_name"] or "") + (f'@{r["version_affected"]}' if (r["version_affected"] or "") else ""),
                   "title": ("fix " + (r["version_remediation"] or "")) if (r["version_remediation"] or "") else "",
-                  "status": r["status"] or "",
-              },
-          )
-          add(
-              "secrets_findings",
-              "secrets",
+                  "status": r["status"] or ""})
+          add("secrets_findings", "secrets",
               "id, severity, detector_name, detector_type, file_path, line_number, status",
-              lambda r: {
-                  "kind": "secrets",
-                  "severity": r["severity"] or "",
+              lambda r: {"kind": "secrets", "severity": r["severity"] or "",
                   "rule": (r["detector_name"] or "") + (f'/{r["detector_type"]}' if (r["detector_type"] or "") else ""),
                   "location": f'{r["file_path"]}:{r["line_number"]}' if (r["file_path"] or "") else "",
-                  "title": "Potential secret detected",
-                  "status": r["status"] or "",
-              },
-          )
-          add(
-              "iac_findings",
-              "iac",
+                  "title": "Potential secret detected", "status": r["status"] or ""})
+          add("iac_findings", "iac",
               "id, severity, check_id, title, file_path, line_start, status",
-              lambda r: {
-                  "kind": "iac",
-                  "severity": r["severity"] or "",
-                  "rule": r["check_id"] or "",
+              lambda r: {"kind": "iac", "severity": r["severity"] or "", "rule": r["check_id"] or "",
                   "location": f'{r["file_path"]}:{r["line_start"]}' if (r["file_path"] or "") else "",
-                  "title": (r["title"] or "")[:200],
-                  "status": r["status"] or "",
-              },
-          )
-
-          details_source = "sqlite"
-
-          def to_text(b):
-              if b is None:
-                  return ""
-              if isinstance(b, (bytes, bytearray)):
-                  return b.decode("utf-8", errors="replace")
-              return str(b)
-
-          def append_finding(kind, severity, rule, location, title, status="open"):
-              findings.append({
-                  "kind": kind or "",
-                  "severity": severity or "",
-                  "rule": rule or "",
-                  "location": location or "",
-                  "title": (title or "")[:200],
-                  "status": status or "",
-              })
-
-          def parse_opengrep_raw(raw_text):
-              try:
-                  payload = json.loads(raw_text or "{}")
-              except Exception:
-                  return
-              for r in payload.get("results", []) or []:
-                  extra = r.get("extra") or {}
-                  start = r.get("start") or {}
-                  loc = r.get("path") or ""
-                  line = start.get("line")
-                  if loc and line:
-                      loc = f"{loc}:{line}"
-                  append_finding(
-                      "sast",
-                      extra.get("severity", ""),
-                      r.get("check_id", ""),
-                      loc,
-                      extra.get("message", ""),
-                      "open",
-                  )
-
-          def parse_trivy_raw(raw_text):
-              try:
-                  payload = json.loads(raw_text or "{}")
-              except Exception:
-                  return
-              for res in payload.get("Results", []) or []:
-                  target = res.get("Target") or ""
-                  for m in res.get("Misconfigurations", []) or []:
-                      line = (((m.get("IacMetadata") or {}).get("StartLine")) or 0)
-                      loc = f"{target}:{line}" if (target and line) else target
-                      title = m.get("Title") or m.get("Description") or ""
-                      append_finding(
-                          "iac",
-                          m.get("Severity", ""),
-                          m.get("ID", ""),
-                          loc,
-                          title,
-                          m.get("Status", "") or "open",
-                      )
-
-          def parse_grype_raw(raw_text):
-              try:
-                  payload = json.loads(raw_text or "{}")
-              except Exception:
-                  return
-              for m in payload.get("matches", []) or []:
-                  vuln = m.get("vulnerability") or {}
-                  art = m.get("artifact") or {}
-                  locations = art.get("locations") or []
-                  loc = ""
-                  if locations:
-                      first = locations[0] or {}
-                      loc = first.get("path") or first.get("realPath") or ""
-                  if not loc:
-                      name = art.get("name") or ""
-                      ver = art.get("version") or ""
-                      loc = f"{name}@{ver}" if (name and ver) else (name or "")
-                  fix_versions = vuln.get("fix", {}).get("versions") or []
-                  title = ""
-                  if fix_versions:
-                      title = f'fix {" ,".join(str(v) for v in fix_versions[:3])}'
-                  append_finding(
-                      "sca",
-                      vuln.get("severity", ""),
-                      vuln.get("id", ""),
-                      loc,
-                      title,
-                      "open",
-                  )
-
-          def _deep_find_file_and_line(obj):
-              file_path = ""
-              line_no = 0
-              if isinstance(obj, dict):
-                  # Common trufflehog shapes: SourceMetadata.file/line or nested Data.Filesystem.file/line
-                  for k, v in obj.items():
-                      lk = str(k).lower()
-                      if not file_path and lk in ("file", "filepath", "path") and isinstance(v, str):
-                          file_path = v
-                      if not line_no and lk in ("line", "linenumber") and isinstance(v, int):
-                          line_no = v
-                  for v in obj.values():
-                      if file_path and line_no:
-                          break
-                      f, l = _deep_find_file_and_line(v)
-                      file_path = file_path or f
-                      line_no = line_no or l
-              elif isinstance(obj, list):
-                  for item in obj:
-                      f, l = _deep_find_file_and_line(item)
-                      if f or l:
-                          return f, l
-              return file_path, line_no
-
-          def parse_trufflehog_raw(raw_text):
-              for line in (raw_text or "").splitlines():
-                  line = line.strip()
-                  if not line:
-                      continue
-                  try:
-                      obj = json.loads(line)
-                  except Exception:
-                      continue
-                  verified = bool(obj.get("Verified"))
-                  sev = "HIGH" if verified else "MEDIUM"
-                  detector_name = obj.get("DetectorName") or ""
-                  detector_type = obj.get("DetectorType") or ""
-                  rule = detector_name + (f"/{detector_type}" if detector_type else "")
-                  file_path, line_no = _deep_find_file_and_line(obj.get("SourceMetadata") or {})
-                  loc = f"{file_path}:{line_no}" if (file_path and line_no) else (file_path or "")
-                  append_finding(
-                      "secrets",
-                      sev,
-                      rule,
-                      loc,
-                      "Potential secret detected",
-                      "open",
-                  )
-
-          # Fallback: parse raw scanner outputs when normalized tables are not populated.
-          if not findings:
-              try:
-                  cur.execute(
-                      "SELECT scanner_name, content_type, raw_output FROM scan_job_raw_outputs WHERE scan_job_id = ?",
-                      (job_id,),
-                  )
-                  raw_rows = cur.fetchall()
-              except sqlite3.OperationalError:
-                  raw_rows = []
-              if raw_rows:
-                  details_source = "raw"
-              for rr in raw_rows:
-                  scanner = (rr["scanner_name"] or "").strip().lower()
-                  raw_text = to_text(rr["raw_output"])
-                  if not raw_text.strip():
-                      continue
-                  if scanner == "opengrep":
-                      parse_opengrep_raw(raw_text)
-                  elif scanner == "trivy":
-                      parse_trivy_raw(raw_text)
-                  elif scanner == "grype":
-                      parse_grype_raw(raw_text)
-                  elif scanner == "trufflehog":
-                      parse_trufflehog_raw(raw_text)
+                  "title": (r["title"] or "")[:200], "status": r["status"] or ""})
 
           findings.sort(key=lambda f: (-severity_rank.get(f["severity"], 0), f["kind"], f["location"], f["rule"]))
           top = findings[:20]
@@ -585,25 +387,16 @@ jobs:
           with open(os.path.join(report_dir, "findings-top.json"), "w", encoding="utf-8") as f:
               json.dump(top, f, indent=2)
 
-          md_lines = [
-              f"# Top Findings ({'from SQLite' if details_source == 'sqlite' else 'from raw scanner outputs fallback'})",
-              "",
-              f"Scan Job: #{job_id}",
-              "",
-          ]
+          md_lines = ["# Top Findings (from SQLite)", "", f"Scan Job: #{job_id}", ""]
           if not top:
               md_lines.append("No normalized findings rows found for this scan job.")
           else:
-              md_lines.extend([
-                  "| Kind | Severity | Rule/CVE | Location | Detail | Status |",
-                  "|---|---|---|---|---|---|",
-              ])
+              md_lines.extend(["| Kind | Severity | Rule/CVE | Location | Detail | Status |", "|---|---|---|---|---|---|"])
               for item in top:
                   def esc(s):
                       return str(s or "").replace("|", "\\|").replace("\n", " ").strip()
                   md_lines.append(
-                      f'| {esc(item["kind"])} | {esc(item["severity"])} | {esc(item["rule"])} | {esc(item["location"])} | {esc(item["title"])} | {esc(item["status"])} |'
-                  )
+                      f'| {esc(item["kind"])} | {esc(item["severity"])} | {esc(item["rule"])} | {esc(item["location"])} | {esc(item["title"])} | {esc(item["status"])} |')
 
           preview_md = "\n".join(md_lines) + "\n"
           preview_path = os.path.join(report_dir, "findings-top.md")
@@ -612,53 +405,69 @@ jobs:
 
           with open(out, "a", encoding="utf-8") as f:
               f.write(f"has_details={'true' if bool(top) else 'false'}\n")
-              f.write(f"details_source={details_source}\n")
               f.write(f"details_markdown_path={preview_path}\n")
           con.close()
           PY
-        env:
-          DB_PATH: ${{ steps.paths.outputs.db_path }}
-          REPORT_DIR: ${{ steps.paths.outputs.report_dir }}
-          JOB_ID: ${{ steps.parse.outputs.job_id }}
 
       - name: Publish job summary
         if: always()
         shell: bash
+        env:
+          PARSE_SKIPPED: ${{ steps.parse.outputs.skipped }}
+          PARSE_SKIP_REASON: ${{ steps.parse.outputs.skip_reason }}
+          PARSE_REPO: ${{ steps.parse.outputs.repo }}
+          TARGET_REPO_URL: ${{ steps.target.outputs.scan_repo_url }}
+          PARSE_BRANCH: ${{ steps.parse.outputs.branch }}
+          TARGET_BRANCH: ${{ steps.target.outputs.scan_branch }}
+          PARSE_SCAN_EXIT: ${{ steps.parse.outputs.scan_exit }}
+          PARSE_JOB_ID: ${{ steps.parse.outputs.job_id }}
+          PARSE_JOB_STATUS: ${{ steps.parse.outputs.job_status }}
+          PARSE_GRYPE: ${{ steps.parse.outputs.grype_count }}
+          PARSE_OPENGREP: ${{ steps.parse.outputs.opengrep_count }}
+          PARSE_TRUFFLEHOG: ${{ steps.parse.outputs.trufflehog_count }}
+          PARSE_TRIVY: ${{ steps.parse.outputs.trivy_count }}
+          PARSE_TOTAL: ${{ steps.parse.outputs.total_findings }}
+          PARSE_CRITICAL: ${{ steps.parse.outputs.critical }}
+          PARSE_HIGH: ${{ steps.parse.outputs.high }}
+          PARSE_MEDIUM: ${{ steps.parse.outputs.medium }}
+          PARSE_LOW: ${{ steps.parse.outputs.low }}
+          PARSE_IGNORED_HIGH: ${{ steps.parse.outputs.ignored_high_findings }}
+          PARSE_CONCLUSION: ${{ steps.parse.outputs.conclusion }}
         run: |
           {
             echo "## Ctrlscan Self Scan"
             echo ""
-            if [ "${{ steps.parse.outputs.skipped }}" = "true" ]; then
+            if [ "$PARSE_SKIPPED" = "true" ]; then
               echo "- Status: skipped"
-              echo "- Reason: ${{ steps.parse.outputs.skip_reason }}"
+              echo "- Reason: $PARSE_SKIP_REASON"
               exit 0
             fi
-            echo "- Repo: \`${{ steps.parse.outputs.repo || steps.target.outputs.scan_repo_url }}\`"
-            echo "- Branch: \`${{ steps.parse.outputs.branch || steps.target.outputs.scan_branch }}\`"
-            echo "- Scan command exit: \`${{ steps.parse.outputs.scan_exit }}\`"
-            echo "- Scan job: \`#${{ steps.parse.outputs.job_id }}\` (\`${{ steps.parse.outputs.job_status }}\`)"
+            echo "- Repo: \`${PARSE_REPO:-$TARGET_REPO_URL}\`"
+            echo "- Branch: \`${PARSE_BRANCH:-$TARGET_BRANCH}\`"
+            echo "- Scan command exit: \`$PARSE_SCAN_EXIT\`"
+            echo "- Scan job: \`#$PARSE_JOB_ID\` (\`$PARSE_JOB_STATUS\`)"
             echo ""
             echo "### Scanner Counts"
             echo ""
             echo "| Scanner | Findings |"
             echo "|---|---:|"
-            echo "| grype | ${{ steps.parse.outputs.grype_count }} |"
-            echo "| opengrep | ${{ steps.parse.outputs.opengrep_count }} |"
-            echo "| trufflehog | ${{ steps.parse.outputs.trufflehog_count }} |"
-            echo "| trivy | ${{ steps.parse.outputs.trivy_count }} |"
-            echo "| **Total** | **${{ steps.parse.outputs.total_findings }}** |"
+            echo "| grype | $PARSE_GRYPE |"
+            echo "| opengrep | $PARSE_OPENGREP |"
+            echo "| trufflehog | $PARSE_TRUFFLEHOG |"
+            echo "| trivy | $PARSE_TRIVY |"
+            echo "| **Total** | **$PARSE_TOTAL** |"
             echo ""
             echo "### Severity Rollup"
             echo ""
             echo "| Critical | High | Medium | Low |"
             echo "|---:|---:|---:|---:|"
-            echo "| ${{ steps.parse.outputs.critical }} | ${{ steps.parse.outputs.high }} | ${{ steps.parse.outputs.medium }} | ${{ steps.parse.outputs.low }} |"
+            echo "| $PARSE_CRITICAL | $PARSE_HIGH | $PARSE_MEDIUM | $PARSE_LOW |"
             echo ""
-            if [ "${{ steps.parse.outputs.ignored_high_findings }}" != "0" ]; then
-              echo "- Policy exclusions applied: ignored \`${{ steps.parse.outputs.ignored_high_findings }}\` known false-positive high finding(s) for \`actions/download-artifact\` GHSA version normalization."
+            if [ "$PARSE_IGNORED_HIGH" != "0" ]; then
+              echo "- Policy exclusions applied: ignored \`$PARSE_IGNORED_HIGH\` known false-positive high finding(s) for \`actions/download-artifact\` GHSA version normalization."
               echo ""
             fi
-            echo "Policy result: \`${{ steps.parse.outputs.conclusion }}\` (fail on secrets or critical/high)"
+            echo "Policy result: \`$PARSE_CONCLUSION\` (fail on secrets or critical/high)"
             if [ -f "reports/findings-top.md" ]; then
               echo ""
               cat "reports/findings-top.md"
@@ -668,7 +477,7 @@ jobs:
       - name: Upload scan artifacts
         id: upload_artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ctrlscan-self-scan-reports
           path: |
@@ -678,16 +487,20 @@ jobs:
       - name: Append artifact links to summary
         if: always()
         shell: bash
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ARTIFACT_ID: ${{ steps.upload_artifacts.outputs.artifact-id }}
         run: |
-          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          artifact_id="${{ steps.upload_artifacts.outputs.artifact-id }}"
+          run_url="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
           {
             echo ""
             echo "### Links"
             echo ""
             echo "- Workflow run: ${run_url}"
-            if [ -n "${artifact_id}" ]; then
-              echo "- Artifact: ${run_url}/artifacts/${artifact_id}"
+            if [ -n "${ARTIFACT_ID}" ]; then
+              echo "- Artifact: ${run_url}/artifacts/${ARTIFACT_ID}"
             else
               echo "- Artifact: ctrlscan-self-scan-reports (see workflow run page)"
             fi
@@ -696,12 +509,33 @@ jobs:
       - name: Comment on PR with self-scan summary
         if: ${{ always() && github.event_name == 'pull_request' }}
         continue-on-error: true
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PARSE_SKIPPED: ${{ steps.parse.outputs.skipped }}
+          PARSE_CONCLUSION: ${{ steps.parse.outputs.conclusion }}
+          PARSE_SKIP_REASON: ${{ steps.parse.outputs.skip_reason }}
+          PARSE_REPO: ${{ steps.parse.outputs.repo }}
+          TARGET_REPO_URL: ${{ steps.target.outputs.scan_repo_url }}
+          PARSE_BRANCH: ${{ steps.parse.outputs.branch }}
+          TARGET_BRANCH: ${{ steps.target.outputs.scan_branch }}
+          PARSE_JOB_ID: ${{ steps.parse.outputs.job_id }}
+          PARSE_JOB_STATUS: ${{ steps.parse.outputs.job_status }}
+          PARSE_IGNORED_HIGH: ${{ steps.parse.outputs.ignored_high_findings }}
+          PARSE_GRYPE: ${{ steps.parse.outputs.grype_count }}
+          PARSE_OPENGREP: ${{ steps.parse.outputs.opengrep_count }}
+          PARSE_TRUFFLEHOG: ${{ steps.parse.outputs.trufflehog_count }}
+          PARSE_TRIVY: ${{ steps.parse.outputs.trivy_count }}
+          PARSE_TOTAL: ${{ steps.parse.outputs.total_findings }}
+          PARSE_CRITICAL: ${{ steps.parse.outputs.critical }}
+          PARSE_HIGH: ${{ steps.parse.outputs.high }}
+          PARSE_MEDIUM: ${{ steps.parse.outputs.medium }}
+          PARSE_LOW: ${{ steps.parse.outputs.low }}
+          ARTIFACT_ID: ${{ steps.upload_artifacts.outputs.artifact-id }}
         with:
           script: |
             const marker = '<!-- ctrlscan-self-scan -->';
-            const skipped = '${{ steps.parse.outputs.skipped }}' === 'true';
-            const conclusion = '${{ steps.parse.outputs.conclusion }}' || 'unknown';
+            const skipped = process.env.PARSE_SKIPPED === 'true';
+            const conclusion = process.env.PARSE_CONCLUSION || 'unknown';
             const emoji = conclusion === 'failure' ? '❌' : conclusion === 'neutral' ? '⚠️' : '✅';
             let body;
             if (skipped) {
@@ -711,18 +545,17 @@ jobs:
                 '',
                 'Status: skipped',
                 '',
-                `Reason: ${{ steps.parse.outputs.skip_reason }}`,
+                `Reason: ${process.env.PARSE_SKIP_REASON}`,
               ].join('\n');
             } else {
               const fs = require('fs');
               const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-              const artifactId = '${{ steps.upload_artifacts.outputs.artifact-id }}';
+              const artifactId = process.env.ARTIFACT_ID || '';
               const artifactUrl = artifactId ? `${runUrl}/artifacts/${artifactId}` : '';
               let findingsPreview = '';
               try {
                 if (fs.existsSync('reports/findings-top.md')) {
                   const raw = fs.readFileSync('reports/findings-top.md', 'utf8').trim();
-                  // Keep PR comments compact
                   const lines = raw.split('\n').slice(0, 18);
                   findingsPreview = [
                     '',
@@ -738,31 +571,35 @@ jobs:
               } catch (e) {
                 findingsPreview = '';
               }
+              const ignoredHigh = parseInt(process.env.PARSE_IGNORED_HIGH || '0', 10);
+              const policyExclusion = ignoredHigh > 0
+                ? `Policy exclusions: ignored ${ignoredHigh} known false-positive high finding(s) for actions/download-artifact.`
+                : '';
               body = [
                 marker,
                 `## ${emoji} Ctrlscan Self Scan`,
                 '',
-                `Repo: \`${{ steps.parse.outputs.repo || steps.target.outputs.scan_repo_url }}\`  `,
-                `Branch: \`${{ steps.parse.outputs.branch || steps.target.outputs.scan_branch }}\`  `,
-                `Scan Job: \`#${{ steps.parse.outputs.job_id }}\` (\`${{ steps.parse.outputs.job_status }}\`)  `,
-                `Policy: \`${{ steps.parse.outputs.conclusion }}\` (fail on secrets or critical/high)`,
-                `${{ steps.parse.outputs.ignored_high_findings != '0' && format('Policy exclusions: ignored {0} known false-positive high finding(s) for actions/download-artifact.', steps.parse.outputs.ignored_high_findings) || '' }}`,
+                `Repo: \`${process.env.PARSE_REPO || process.env.TARGET_REPO_URL}\`  `,
+                `Branch: \`${process.env.PARSE_BRANCH || process.env.TARGET_BRANCH}\`  `,
+                `Scan Job: \`#${process.env.PARSE_JOB_ID}\` (\`${process.env.PARSE_JOB_STATUS}\`)  `,
+                `Policy: \`${conclusion}\` (fail on secrets or critical/high)`,
+                policyExclusion,
                 '',
                 '### Scanner Counts',
                 '',
                 '| Scanner | Findings |',
                 '|---|---:|',
-                '| grype | ${{ steps.parse.outputs.grype_count }} |',
-                '| opengrep | ${{ steps.parse.outputs.opengrep_count }} |',
-                '| trufflehog | ${{ steps.parse.outputs.trufflehog_count }} |',
-                '| trivy | ${{ steps.parse.outputs.trivy_count }} |',
-                '| **Total** | **${{ steps.parse.outputs.total_findings }}** |',
+                `| grype | ${process.env.PARSE_GRYPE} |`,
+                `| opengrep | ${process.env.PARSE_OPENGREP} |`,
+                `| trufflehog | ${process.env.PARSE_TRUFFLEHOG} |`,
+                `| trivy | ${process.env.PARSE_TRIVY} |`,
+                `| **Total** | **${process.env.PARSE_TOTAL}** |`,
                 '',
                 '### Severity Rollup',
                 '',
                 '| Critical | High | Medium | Low |',
                 '|---:|---:|---:|---:|',
-                '| ${{ steps.parse.outputs.critical }} | ${{ steps.parse.outputs.high }} | ${{ steps.parse.outputs.medium }} | ${{ steps.parse.outputs.low }} |',
+                `| ${process.env.PARSE_CRITICAL} | ${process.env.PARSE_HIGH} | ${process.env.PARSE_MEDIUM} | ${process.env.PARSE_LOW} |`,
                 '',
                 `Workflow run: ${runUrl}`,
                 artifactUrl
@@ -800,8 +637,10 @@ jobs:
       - name: Enforce self-scan policy
         if: ${{ always() && steps.parse.outputs.skipped != 'true' }}
         shell: bash
+        env:
+          CONCLUSION: ${{ steps.parse.outputs.conclusion }}
         run: |
-          if [ "${{ steps.parse.outputs.conclusion }}" = "failure" ]; then
+          if [ "$CONCLUSION" = "failure" ]; then
             echo "::error::Ctrlscan self-scan policy failed (secrets or critical/high findings detected, or scan command failed)."
             exit 1
           fi

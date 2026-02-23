@@ -79,13 +79,19 @@ jobs:
           CFG_PATH="${RUNNER_TEMP}/ctrlscan-ci-config.json"
           REPORT_DIR="${GITHUB_WORKSPACE}/reports"
           mkdir -p "${HOME_DIR}" "${BIN_DIR}" "${REPORT_DIR}"
-          {
-            echo "home_dir=${HOME_DIR}"
-            echo "bin_dir=${BIN_DIR}"
-            echo "db_path=${DB_PATH}"
-            echo "cfg_path=${CFG_PATH}"
-            echo "report_dir=${REPORT_DIR}"
-          } >> "$GITHUB_OUTPUT"
+          export HOME_DIR BIN_DIR DB_PATH CFG_PATH REPORT_DIR GITHUB_OUTPUT
+          python3 - <<'PY'
+          import os
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              for key, env_key in [
+                  ("home_dir", "HOME_DIR"),
+                  ("bin_dir", "BIN_DIR"),
+                  ("db_path", "DB_PATH"),
+                  ("cfg_path", "CFG_PATH"),
+                  ("report_dir", "REPORT_DIR"),
+              ]:
+                  f.write(f"{key}={os.environ[env_key]}\n")
+          PY
           echo "${BIN_DIR}" >> "$GITHUB_PATH"
 
       - name: Install scanner tools
@@ -149,25 +155,32 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          skip_scan=false
+          skip_reason=""
+          scan_repo_url=""
+          scan_branch=""
+          head_sha=""
           if [ "$EVENT_NAME" = "pull_request" ]; then
             if [ "$PR_HEAD_FULL_NAME" != "$REPOSITORY" ]; then
-              echo "skip_scan=true" >> "$GITHUB_OUTPUT"
-              echo "skip_reason=Fork PRs are skipped by self-scan because ctrlscan scan clones by repo URL and cannot safely use elevated tokens on untrusted fork code." >> "$GITHUB_OUTPUT"
-              exit 0
+              skip_scan=true
+              skip_reason="Fork PRs are skipped by self-scan because ctrlscan scan clones by repo URL and cannot safely use elevated tokens on untrusted fork code."
+            else
+              scan_repo_url="$PR_HEAD_CLONE_URL"
+              scan_branch="$PR_HEAD_REF"
+              head_sha="$PR_HEAD_SHA"
             fi
-            {
-              echo "scan_repo_url=$PR_HEAD_CLONE_URL"
-              echo "scan_branch=$PR_HEAD_REF"
-              echo "head_sha=$PR_HEAD_SHA"
-            } >> "$GITHUB_OUTPUT"
           else
-            {
-              echo "scan_repo_url=https://github.com/$REPOSITORY"
-              echo "scan_branch=$REF_NAME"
-              echo "head_sha=$SHA"
-            } >> "$GITHUB_OUTPUT"
+            scan_repo_url="https://github.com/$REPOSITORY"
+            scan_branch="$REF_NAME"
+            head_sha="$SHA"
           fi
-          echo "skip_scan=false" >> "$GITHUB_OUTPUT"
+          export skip_scan skip_reason scan_repo_url scan_branch head_sha GITHUB_OUTPUT
+          python3 - <<'PY'
+          import os
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              for key in ("skip_scan", "skip_reason", "scan_repo_url", "scan_branch", "head_sha"):
+                  f.write(f"{key}={os.environ.get(key, '')}\n")
+          PY
 
       - name: Run ctrlscan self scan
         id: scan
@@ -190,7 +203,12 @@ jobs:
             --parallel \
             2>&1 | tee "$REPORT_DIR/ctrlscan-scan.log"
           scan_exit=${PIPESTATUS[0]}
-          echo "scan_exit=${scan_exit}" >> "$GITHUB_OUTPUT"
+          export scan_exit GITHUB_OUTPUT
+          python3 - <<'PY'
+          import os
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"scan_exit={os.environ['scan_exit']}\n")
+          PY
           exit 0
 
       - name: Parse scan results from SQLite

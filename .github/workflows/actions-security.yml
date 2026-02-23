@@ -21,11 +21,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.7"
+          cache: false
+
       - name: Install actionlint
-        run: bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+        run: "go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.8"
 
       - name: Lint workflows
-        run: ./actionlint -color
+        run: '"$(go env GOPATH)/bin/actionlint" -color'
 
   zizmor:
     name: zizmor

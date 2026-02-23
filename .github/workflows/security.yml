@@ -130,7 +130,12 @@ jobs:
               --report-path reports/gitleaks.sarif
           fi
           ec=$?
-          echo "exit_code=$ec" >> "$GITHUB_OUTPUT"
+          export ec GITHUB_OUTPUT
+          python3 - <<'PY'
+          import os
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"exit_code={os.environ['ec']}\n")
+          PY
           exit 0
 
       - name: Upload Gitleaks SARIF

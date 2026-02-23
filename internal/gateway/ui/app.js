@@ -555,9 +555,38 @@ function renderScans() {
   const selectedJob = state.selectedJob;
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
+  const scanWorkers = (state.agentWorkers || []).filter((w) => String(w?.kind || "").toLowerCase() === "scan");
+  const activeScanWorkers = scanWorkers.filter((w) => {
+    const st = String(w?.status || "").toLowerCase();
+    return st === "running" || st === "failed";
+  });
   setHtml(root, `
     <div class="stack">
       ${renderSweepSummaryCard()}
+      <div class="card">
+        <div class="toolbar" style="justify-content:space-between">
+          <h3 style="margin:0">Active Scan Workers</h3>
+          <span class="muted">${activeScanWorkers.length} active • ${scanWorkers.length} total scan workers</span>
+        </div>
+        <div class="table-wrap" style="max-height:180px">
+          <table>
+            <thead><tr><th>Name</th><th>Status</th><th>Action</th><th>Repo</th><th>Job</th><th>Message</th><th>Updated</th></tr></thead>
+            <tbody>
+              ${(scanWorkers.length ? scanWorkers : []).map(w => `
+                <tr>
+                  <td>${escapeHtml(w.name || "")}</td>
+                  <td><span class="${statusClass(w.status)}">${escapeHtml(w.status || "")}</span></td>
+                  <td>${escapeHtml(w.action || "")}</td>
+                  <td>${escapeHtml(w.repo || "")}</td>
+                  <td>${w.scan_job_id ? `#${w.scan_job_id}` : `<span class="muted">-</span>`}</td>
+                  <td class="muted">${escapeHtml(w.message || "")}</td>
+                  <td class="muted">${escapeHtml(fmtDate(w.updated_at))}</td>
+                </tr>
+              `).join("") : `<tr><td colspan="7" class="muted">No scan worker telemetry yet. Trigger a scan to populate live worker activity.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>
       <div class="split">
       <div class="card">
         <div class="toolbar">
@@ -1825,6 +1854,8 @@ async function refreshAgent() {
 async function refreshAgentWorkers() {
   state.agentWorkers = await api("/api/agent/workers");
   renderAgents();
+  if (state.view === "scans") renderScans();
+  if (state.view === "scan-detail") renderScanDetailPage();
   if (state.view === "remediation") renderRemediation();
 }
 

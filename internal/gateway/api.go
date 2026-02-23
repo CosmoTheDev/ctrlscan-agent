@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ func buildHandler(gw *Gateway) http.Handler {
 
 	// Scan jobs
 	mux.HandleFunc("GET /api/jobs", gw.handleListJobs)
+	mux.HandleFunc("GET /api/jobs/repos", gw.handleListJobRepos)
 	mux.HandleFunc("DELETE /api/jobs", gw.handleDeleteJobs)
 	mux.HandleFunc("GET /api/jobs/summary", gw.handleJobsSummary)
 	mux.HandleFunc("GET /api/jobs/{id}", gw.handleGetJob)
@@ -44,7 +46,9 @@ func buildHandler(gw *Gateway) http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}/scanners", gw.handleListJobScanners)
 	mux.HandleFunc("GET /api/jobs/{id}/findings", gw.handleListJobFindings)
 	mux.HandleFunc("GET /api/jobs/{id}/fixes", gw.handleListJobFixes)
+	mux.HandleFunc("GET /api/jobs/{id}/remediation", gw.handleListJobRemediationRuns)
 	mux.HandleFunc("GET /api/jobs/{id}/raw/{scanner}", gw.handleGetJobRawScannerOutput)
+	mux.HandleFunc("POST /api/jobs/{id}/remediation/stop", gw.handleStopJobRemediation)
 	mux.HandleFunc("POST /api/scan", gw.handleTriggerScan)
 
 	// Agent runtime controls
@@ -55,9 +59,14 @@ func buildHandler(gw *Gateway) http.Handler {
 	mux.HandleFunc("POST /api/agent/pause", gw.handleAgentPause)
 	mux.HandleFunc("POST /api/agent/resume", gw.handleAgentResume)
 	mux.HandleFunc("PUT /api/agent/workers", gw.handleAgentWorkers)
+	mux.HandleFunc("GET /api/agent/workers", gw.handleAgentWorkersList)
 
 	// Findings (read-only aggregated view)
 	mux.HandleFunc("GET /api/findings", gw.handleListFindings)
+	mux.HandleFunc("GET /api/findings/path-ignores", gw.handleListFindingPathIgnores)
+	mux.HandleFunc("POST /api/findings/path-ignores", gw.handleCreateFindingPathIgnore)
+	mux.HandleFunc("PUT /api/findings/path-ignores/{id}", gw.handleUpdateFindingPathIgnore)
+	mux.HandleFunc("DELETE /api/findings/path-ignores/{id}", gw.handleDeleteFindingPathIgnore)
 	mux.HandleFunc("GET /api/logs", gw.handleLogs)
 
 	// Fix queue + approval
@@ -71,6 +80,14 @@ func buildHandler(gw *Gateway) http.Handler {
 	mux.HandleFunc("POST /api/schedules", gw.handleCreateSchedule)
 	mux.HandleFunc("DELETE /api/schedules/{id}", gw.handleDeleteSchedule)
 	mux.HandleFunc("POST /api/schedules/{id}/trigger", gw.handleTriggerSchedule)
+
+	// Remediation campaigns (offline AI fix/PR workflow on existing findings)
+	mux.HandleFunc("GET /api/remediation/campaigns", gw.handleListRemediationCampaigns)
+	mux.HandleFunc("POST /api/remediation/campaigns", gw.handleCreateRemediationCampaign)
+	mux.HandleFunc("GET /api/remediation/campaigns/{id}", gw.handleGetRemediationCampaign)
+	mux.HandleFunc("GET /api/remediation/campaigns/{id}/tasks", gw.handleListRemediationCampaignTasks)
+	mux.HandleFunc("POST /api/remediation/campaigns/{id}/start", gw.handleStartRemediationCampaign)
+	mux.HandleFunc("POST /api/remediation/campaigns/{id}/stop", gw.handleStopRemediationCampaign)
 
 	// Server-Sent Events stream
 	mux.HandleFunc("GET /events", gw.handleEvents)
@@ -92,6 +109,79 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func (gw *Gateway) ensureRemediationSchema(ctx context.Context) error {
+	// Safe to call repeatedly; migration runner is idempotent.
+	return gw.db.Migrate(ctx)
+}
+
+func remediationSchemaHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "no such table") && (strings.Contains(msg, "remediation_campaigns") || strings.Contains(msg, "remediation_tasks")) {
+		return "remediation schema is missing; restart the gateway after upgrading so migrations can run"
+	}
+	return ""
+}
+
+type findingPathIgnoreRuleRow struct {
+	ID        int64  `db:"id" json:"id"`
+	Substring string `db:"substring" json:"substring"`
+	Enabled   bool   `db:"enabled" json:"enabled"`
+	Note      string `db:"note" json:"note"`
+	CreatedAt string `db:"created_at" json:"created_at"`
+	UpdatedAt string `db:"updated_at" json:"updated_at"`
+}
+
+type findingPathIgnoreRuleUpsertRequest struct {
+	Substring string `json:"substring"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+	Note      string `json:"note"`
+}
+
+func (gw *Gateway) ensureFindingIgnoreSchema(ctx context.Context) error {
+	return gw.db.Migrate(ctx)
+}
+
+func (gw *Gateway) loadEnabledPathIgnoreSubstrings(ctx context.Context) []string {
+	_ = gw.ensureFindingIgnoreSchema(ctx)
+	var rows []struct {
+		Substring string `db:"substring"`
+	}
+	if err := gw.db.Select(ctx, &rows, `SELECT substring FROM finding_path_ignore_rules WHERE enabled = 1 ORDER BY id ASC`); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		s := strings.ToLower(strings.TrimSpace(r.Substring))
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func shouldIgnoreFindingPath(path string, rules []string) bool {
+	if len(rules) == 0 {
+		return false
+	}
+	p := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(path, "\\", "/")))
+	if p == "" {
+		return false
+	}
+	for _, sub := range rules {
+		if sub == "" {
+			continue
+		}
+		if strings.Contains(p, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func pathID(r *http.Request, name string) (int64, error) {
@@ -128,6 +218,8 @@ func (gw *Gateway) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"GET /api/fix-queue",
 			"GET /api/schedules",
 			"POST /api/schedules",
+			"GET /api/remediation/campaigns",
+			"POST /api/remediation/campaigns",
 			"GET /events",
 			"GET /ui",
 		},
@@ -672,23 +764,91 @@ type scanJobRow struct {
 	ErrorMsg         string  `db:"error_msg"         json:"error_msg,omitempty"`
 }
 
+type paginationResult[T any] struct {
+	Items      []T `json:"items"`
+	Page       int `json:"page"`
+	PageSize   int `json:"page_size"`
+	Total      int `json:"total"`
+	TotalPages int `json:"total_pages"`
+}
+
+type paginationParams struct {
+	Page     int
+	PageSize int
+	Offset   int
+}
+
+func parsePaginationParams(r *http.Request, defaultPageSize, maxPageSize int) paginationParams {
+	q := r.URL.Query()
+	page := 1
+	pageSize := defaultPageSize
+
+	if v := strings.TrimSpace(q.Get("page")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	if v := strings.TrimSpace(q.Get("page_size")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			pageSize = n
+		}
+	} else if v := strings.TrimSpace(q.Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			pageSize = n
+		}
+	}
+	if maxPageSize > 0 && pageSize > maxPageSize {
+		pageSize = maxPageSize
+	}
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+
+	if v := strings.TrimSpace(q.Get("offset")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return paginationParams{
+				Page:     (n / pageSize) + 1,
+				PageSize: pageSize,
+				Offset:   n,
+			}
+		}
+	}
+
+	return paginationParams{
+		Page:     page,
+		PageSize: pageSize,
+		Offset:   (page - 1) * pageSize,
+	}
+}
+
 func (gw *Gateway) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
 	status := q.Get("status")
-	limit := 50
+	pg := parsePaginationParams(r, 20, 200)
 
-	query := `SELECT id, unique_key, provider, owner, repo, branch, status,
+	baseSelect := `SELECT id, unique_key, provider, owner, repo, branch, status,
 	           findings_critical, findings_high, findings_medium, findings_low,
 	           started_at, completed_at, error_msg
 	          FROM scan_jobs`
+	baseCount := `SELECT COUNT(*) AS n FROM scan_jobs`
 	var args []any
 	if status != "" {
-		query += " WHERE status = ?"
+		baseSelect += " WHERE status = ?"
+		baseCount += " WHERE status = ?"
 		args = append(args, status)
 	}
-	query += " ORDER BY id DESC LIMIT ?"
-	args = append(args, limit)
+	type countRow struct {
+		N int `db:"n"`
+	}
+	var count countRow
+	if err := gw.db.Get(ctx, &count, baseCount, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	query := baseSelect + " ORDER BY id DESC LIMIT ? OFFSET ?"
+	args = append(args, pg.PageSize, pg.Offset)
 
 	var jobs []scanJobRow
 	if err := gw.db.Select(ctx, &jobs, query, args...); err != nil {
@@ -698,7 +858,17 @@ func (gw *Gateway) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	if jobs == nil {
 		jobs = []scanJobRow{}
 	}
-	writeJSON(w, http.StatusOK, jobs)
+	totalPages := 1
+	if count.N > 0 {
+		totalPages = (count.N + pg.PageSize - 1) / pg.PageSize
+	}
+	writeJSON(w, http.StatusOK, paginationResult[scanJobRow]{
+		Items:      jobs,
+		Page:       pg.Page,
+		PageSize:   pg.PageSize,
+		Total:      count.N,
+		TotalPages: totalPages,
+	})
 }
 
 func (gw *Gateway) handleJobsSummary(w http.ResponseWriter, r *http.Request) {
@@ -732,6 +902,75 @@ func (gw *Gateway) handleJobsSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (gw *Gateway) handleListJobRepos(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("q")))
+	pg := parsePaginationParams(r, 200, 1000)
+
+	type row struct {
+		Provider string `db:"provider" json:"provider"`
+		Owner    string `db:"owner" json:"owner"`
+		Repo     string `db:"repo" json:"repo"`
+		LastID   int64  `db:"last_id" json:"last_id"`
+	}
+	type countRow struct {
+		N int `db:"n"`
+	}
+
+	var count countRow
+	countSQL := `
+		SELECT COUNT(*) AS n
+		FROM (
+		  SELECT provider, owner, repo
+		  FROM scan_jobs
+	`
+	var countArgs []any
+	if q != "" {
+		countSQL += ` WHERE LOWER(owner || '/' || repo) LIKE ?`
+		countArgs = append(countArgs, "%"+q+"%")
+	}
+	countSQL += ` GROUP BY provider, owner, repo
+		) t`
+	if err := gw.db.Get(ctx, &count, countSQL, countArgs...); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	sql := `
+		SELECT provider, owner, repo, MAX(id) AS last_id
+		FROM scan_jobs
+	`
+	var args []any
+	if q != "" {
+		sql += ` WHERE LOWER(owner || '/' || repo) LIKE ?`
+		args = append(args, "%"+q+"%")
+	}
+	sql += ` GROUP BY provider, owner, repo
+	         ORDER BY last_id DESC
+	         LIMIT ? OFFSET ?`
+	args = append(args, pg.PageSize, pg.Offset)
+
+	var rows []row
+	if err := gw.db.Select(ctx, &rows, sql, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if rows == nil {
+		rows = []row{}
+	}
+	totalPages := 1
+	if count.N > 0 {
+		totalPages = (count.N + pg.PageSize - 1) / pg.PageSize
+	}
+	writeJSON(w, http.StatusOK, paginationResult[row]{
+		Items:      rows,
+		Page:       pg.Page,
+		PageSize:   pg.PageSize,
+		Total:      count.N,
+		TotalPages: totalPages,
+	})
 }
 
 type scanJobDetailRow struct {
@@ -1072,8 +1311,13 @@ func (gw *Gateway) handleListJobFindings(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 	q := r.URL.Query()
 	kind := q.Get("kind")
+	scanner := strings.TrimSpace(q.Get("scanner"))
 	severity := strings.TrimSpace(q.Get("severity"))
+	titleFilter := strings.ToLower(strings.TrimSpace(q.Get("title")))
+	pathFilter := strings.ToLower(strings.TrimSpace(q.Get("path")))
+	searchQ := strings.ToLower(strings.TrimSpace(q.Get("q")))
 	status := strings.TrimSpace(q.Get("status"))
+	pg := parsePaginationParams(r, 25, 500)
 	if status == "" {
 		status = "open"
 	}
@@ -1102,7 +1346,7 @@ func (gw *Gateway) handleListJobFindings(w http.ResponseWriter, r *http.Request)
 			FirstSeen string `db:"first_seen_at"`
 		}
 		var rows []row
-		_ = gw.db.Select(ctx, &rows, addFilter("SELECT id, scan_job_id, severity, vulnerability_id, package_name, status, first_seen_at FROM sca_vulns")+" ORDER BY id DESC LIMIT 500")
+		_ = gw.db.Select(ctx, &rows, addFilter("SELECT id, scan_job_id, severity, vulnerability_id, package_name, status, first_seen_at FROM sca_vulns")+" ORDER BY id DESC")
 		for _, row := range rows {
 			results = append(results, jobUnifiedFinding{ID: row.ID, ScanJobID: row.ScanJobID, Kind: "sca", Scanner: "grype", Severity: row.Severity, Title: row.Title, FilePath: row.FilePath, Package: row.FilePath, Status: row.Status, FirstSeen: row.FirstSeen})
 		}
@@ -1118,7 +1362,7 @@ func (gw *Gateway) handleListJobFindings(w http.ResponseWriter, r *http.Request)
 			FirstSeen string `db:"first_seen_at"`
 		}
 		var rows []row
-		_ = gw.db.Select(ctx, &rows, addFilter("SELECT id, scan_job_id, severity, check_id, file_path, status, first_seen_at FROM sast_findings")+" ORDER BY id DESC LIMIT 500")
+		_ = gw.db.Select(ctx, &rows, addFilter("SELECT id, scan_job_id, severity, check_id, file_path, status, first_seen_at FROM sast_findings")+" ORDER BY id DESC")
 		for _, row := range rows {
 			results = append(results, jobUnifiedFinding{ID: row.ID, ScanJobID: row.ScanJobID, Kind: "sast", Scanner: "opengrep", Severity: row.Severity, Title: row.Title, FilePath: row.FilePath, Status: row.Status, FirstSeen: row.FirstSeen})
 		}
@@ -1134,7 +1378,7 @@ func (gw *Gateway) handleListJobFindings(w http.ResponseWriter, r *http.Request)
 			FirstSeen string `db:"first_seen_at"`
 		}
 		var rows []row
-		_ = gw.db.Select(ctx, &rows, addFilter("SELECT id, scan_job_id, severity, detector_name, file_path, status, first_seen_at FROM secrets_findings")+" ORDER BY id DESC LIMIT 500")
+		_ = gw.db.Select(ctx, &rows, addFilter("SELECT id, scan_job_id, severity, detector_name, file_path, status, first_seen_at FROM secrets_findings")+" ORDER BY id DESC")
 		for _, row := range rows {
 			results = append(results, jobUnifiedFinding{ID: row.ID, ScanJobID: row.ScanJobID, Kind: "secrets", Scanner: "trufflehog", Severity: row.Severity, Title: row.Title, FilePath: row.FilePath, Status: row.Status, FirstSeen: row.FirstSeen})
 		}
@@ -1150,7 +1394,7 @@ func (gw *Gateway) handleListJobFindings(w http.ResponseWriter, r *http.Request)
 			FirstSeen string `db:"first_seen_at"`
 		}
 		var rows []row
-		_ = gw.db.Select(ctx, &rows, addFilter("SELECT id, scan_job_id, severity, title, file_path, status, first_seen_at FROM iac_findings")+" ORDER BY id DESC LIMIT 500")
+		_ = gw.db.Select(ctx, &rows, addFilter("SELECT id, scan_job_id, severity, title, file_path, status, first_seen_at FROM iac_findings")+" ORDER BY id DESC")
 		for _, row := range rows {
 			results = append(results, jobUnifiedFinding{ID: row.ID, ScanJobID: row.ScanJobID, Kind: "iac", Scanner: "trivy", Severity: row.Severity, Title: row.Title, FilePath: row.FilePath, Status: row.Status, FirstSeen: row.FirstSeen})
 		}
@@ -1160,10 +1404,169 @@ func (gw *Gateway) handleListJobFindings(w http.ResponseWriter, r *http.Request)
 			results = parsed
 		}
 	}
+	if rules := gw.loadEnabledPathIgnoreSubstrings(ctx); len(rules) > 0 {
+		filtered := make([]jobUnifiedFinding, 0, len(results))
+		for _, f := range results {
+			if shouldIgnoreFindingPath(firstNonEmpty(f.FilePath, f.Package), rules) {
+				continue
+			}
+			filtered = append(filtered, f)
+		}
+		results = filtered
+	}
+	if titleFilter != "" || pathFilter != "" || searchQ != "" {
+		filtered := make([]jobUnifiedFinding, 0, len(results))
+		for _, f := range results {
+			titleVal := strings.ToLower(strings.TrimSpace(f.Title))
+			pathVal := strings.ToLower(strings.TrimSpace(firstNonEmpty(f.FilePath, f.Package)))
+			if titleFilter != "" && !strings.Contains(titleVal, titleFilter) {
+				continue
+			}
+			if pathFilter != "" && !strings.Contains(pathVal, pathFilter) {
+				continue
+			}
+			if searchQ != "" {
+				hay := strings.ToLower(strings.Join([]string{
+					f.Kind,
+					f.Scanner,
+					f.Severity,
+					f.Title,
+					f.FilePath,
+					f.Package,
+					f.Version,
+					f.Message,
+					f.Fix,
+				}, " "))
+				if !strings.Contains(hay, searchQ) {
+					continue
+				}
+			}
+			filtered = append(filtered, f)
+		}
+		results = filtered
+	}
+	if scanner != "" {
+		filtered := make([]jobUnifiedFinding, 0, len(results))
+		for _, f := range results {
+			if strings.EqualFold(strings.TrimSpace(f.Scanner), scanner) {
+				filtered = append(filtered, f)
+			}
+		}
+		results = filtered
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].ID == results[j].ID {
+			return results[i].Title > results[j].Title
+		}
+		return results[i].ID > results[j].ID
+	})
 	if results == nil {
 		results = []jobUnifiedFinding{}
 	}
-	writeJSON(w, http.StatusOK, results)
+	type findingFacets struct {
+		Kinds      []string `json:"kinds"`
+		Scanners   []string `json:"scanners"`
+		Severities []string `json:"severities"`
+	}
+	type findingSeverityTotals struct {
+		Critical int `json:"critical"`
+		High     int `json:"high"`
+		Medium   int `json:"medium"`
+		Low      int `json:"low"`
+	}
+	kindSet := map[string]struct{}{}
+	scannerSet := map[string]struct{}{}
+	sevSet := map[string]struct{}{}
+	sevTotals := findingSeverityTotals{}
+	for _, f := range results {
+		if k := strings.TrimSpace(f.Kind); k != "" {
+			kindSet[k] = struct{}{}
+		}
+		if s := strings.TrimSpace(f.Scanner); s != "" {
+			scannerSet[s] = struct{}{}
+		}
+		if s := normalizeFindingSeverityBucket(f.Severity); s != "" {
+			sevSet[s] = struct{}{}
+			switch s {
+			case "CRITICAL":
+				sevTotals.Critical++
+			case "HIGH":
+				sevTotals.High++
+			case "MEDIUM":
+				sevTotals.Medium++
+			case "LOW":
+				sevTotals.Low++
+			}
+		}
+	}
+	toSorted := func(m map[string]struct{}) []string {
+		out := make([]string, 0, len(m))
+		for k := range m {
+			out = append(out, k)
+		}
+		sort.Strings(out)
+		return out
+	}
+	facets := findingFacets{
+		Kinds:      toSorted(kindSet),
+		Scanners:   toSorted(scannerSet),
+		Severities: toSorted(sevSet),
+	}
+	// Severity sort order should be human-readable, not alpha.
+	order := map[string]int{"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+	sort.Slice(facets.Severities, func(i, j int) bool {
+		ai, aok := order[facets.Severities[i]]
+		aj, bok := order[facets.Severities[j]]
+		if aok && bok {
+			return ai < aj
+		}
+		if aok != bok {
+			return aok
+		}
+		return facets.Severities[i] < facets.Severities[j]
+	})
+	total := len(results)
+	totalPages := 1
+	if total > 0 {
+		totalPages = (total + pg.PageSize - 1) / pg.PageSize
+	}
+	start := pg.Offset
+	if start > total {
+		start = total
+	}
+	end := start + pg.PageSize
+	if end > total {
+		end = total
+	}
+	pageItems := results[start:end]
+	if pageItems == nil {
+		pageItems = []jobUnifiedFinding{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":           pageItems,
+		"page":            pg.Page,
+		"page_size":       pg.PageSize,
+		"total":           total,
+		"total_pages":     totalPages,
+		"facets":          facets,
+		"severity_totals": sevTotals,
+	})
+}
+
+func normalizeFindingSeverityBucket(v string) string {
+	s := strings.ToUpper(strings.TrimSpace(v))
+	switch s {
+	case "CRITICAL":
+		return "CRITICAL"
+	case "HIGH", "ERROR":
+		return "HIGH"
+	case "MEDIUM", "WARNING", "WARN":
+		return "MEDIUM"
+	case "LOW", "INFO":
+		return "LOW"
+	default:
+		return s
+	}
 }
 
 func (gw *Gateway) handleGetJobRawScannerOutput(w http.ResponseWriter, r *http.Request) {
@@ -1223,6 +1626,270 @@ func (gw *Gateway) handleListJobFixes(w http.ResponseWriter, r *http.Request) {
 		rows = []fixQueueRow{}
 	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+func (gw *Gateway) handleListJobRemediationRuns(w http.ResponseWriter, r *http.Request) {
+	_ = gw.ensureRemediationSchema(r.Context())
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	type row struct {
+		TaskID              int64   `db:"task_id" json:"task_id"`
+		CampaignID          int64   `db:"campaign_id" json:"campaign_id"`
+		CampaignName        string  `db:"campaign_name" json:"campaign_name"`
+		CampaignStatus      string  `db:"campaign_status" json:"campaign_status"`
+		CampaignMode        string  `db:"campaign_mode" json:"campaign_mode"`
+		TaskStatus          string  `db:"task_status" json:"task_status"`
+		WorkerName          string  `db:"worker_name" json:"worker_name,omitempty"`
+		TaskMessage         string  `db:"task_message" json:"task_message,omitempty"`
+		CampaignError       string  `db:"campaign_error" json:"campaign_error,omitempty"`
+		CreatedAt           string  `db:"created_at" json:"created_at"`
+		StartedAt           *string `db:"started_at" json:"started_at,omitempty"`
+		CompletedAt         *string `db:"completed_at" json:"completed_at,omitempty"`
+		CampaignStartedAt   *string `db:"campaign_started_at" json:"campaign_started_at,omitempty"`
+		CampaignCompletedAt *string `db:"campaign_completed_at" json:"campaign_completed_at,omitempty"`
+	}
+	var rows []row
+	if err := gw.db.Select(r.Context(), &rows, `
+		SELECT
+		  t.id AS task_id,
+		  t.campaign_id AS campaign_id,
+		  c.name AS campaign_name,
+		  c.status AS campaign_status,
+		  c.mode AS campaign_mode,
+		  t.status AS task_status,
+		  t.worker_name AS worker_name,
+		  t.error_msg AS task_message,
+		  c.error_msg AS campaign_error,
+		  t.created_at AS created_at,
+		  t.started_at AS started_at,
+		  t.completed_at AS completed_at,
+		  c.started_at AS campaign_started_at,
+		  c.completed_at AS campaign_completed_at
+		FROM remediation_tasks t
+		INNER JOIN remediation_campaigns c ON c.id = t.campaign_id
+		WHERE t.scan_job_id = ?
+		ORDER BY t.id DESC
+		LIMIT 20
+	`, id); err != nil {
+		slog.Warn("Failed to list remediation runs for scan job", "scan_job_id", id, "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if rows == nil {
+		rows = []row{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (gw *Gateway) handleListFindingPathIgnores(w http.ResponseWriter, r *http.Request) {
+	if err := gw.ensureFindingIgnoreSchema(r.Context()); err != nil {
+		slog.Warn("Failed ensuring finding path ignore schema", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to prepare finding path ignore schema")
+		return
+	}
+	var rows []findingPathIgnoreRuleRow
+	if err := gw.db.Select(r.Context(), &rows, `SELECT id, substring, enabled, note, created_at, updated_at FROM finding_path_ignore_rules ORDER BY id ASC`); err != nil {
+		slog.Warn("Failed to list finding path ignore rules", "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if rows == nil {
+		rows = []findingPathIgnoreRuleRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (gw *Gateway) handleCreateFindingPathIgnore(w http.ResponseWriter, r *http.Request) {
+	if err := gw.ensureFindingIgnoreSchema(r.Context()); err != nil {
+		slog.Warn("Failed ensuring finding path ignore schema", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to prepare finding path ignore schema")
+		return
+	}
+	var req findingPathIgnoreRuleUpsertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	sub := strings.TrimSpace(strings.ReplaceAll(req.Substring, "\\", "/"))
+	if sub == "" {
+		writeError(w, http.StatusBadRequest, "substring is required")
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	rec := struct {
+		Substring string `db:"substring"`
+		Enabled   bool   `db:"enabled"`
+		Note      string `db:"note"`
+		CreatedAt string `db:"created_at"`
+		UpdatedAt string `db:"updated_at"`
+	}{
+		Substring: sub,
+		Enabled:   enabled,
+		Note:      strings.TrimSpace(req.Note),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	id, err := gw.db.Insert(r.Context(), "finding_path_ignore_rules", rec)
+	if err != nil {
+		slog.Warn("Failed to create finding path ignore rule", "error", err)
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			writeError(w, http.StatusConflict, "substring already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "create failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+func (gw *Gateway) handleUpdateFindingPathIgnore(w http.ResponseWriter, r *http.Request) {
+	if err := gw.ensureFindingIgnoreSchema(r.Context()); err != nil {
+		slog.Warn("Failed ensuring finding path ignore schema", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to prepare finding path ignore schema")
+		return
+	}
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req findingPathIgnoreRuleUpsertRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	sub := strings.TrimSpace(strings.ReplaceAll(req.Substring, "\\", "/"))
+	if sub == "" {
+		writeError(w, http.StatusBadRequest, "substring is required")
+		return
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	if err := gw.db.Exec(r.Context(),
+		`UPDATE finding_path_ignore_rules SET substring = ?, enabled = ?, note = ?, updated_at = ? WHERE id = ?`,
+		sub, enabled, strings.TrimSpace(req.Note), time.Now().UTC().Format(time.RFC3339), id,
+	); err != nil {
+		slog.Warn("Failed to update finding path ignore rule", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "updated"})
+}
+
+func (gw *Gateway) handleDeleteFindingPathIgnore(w http.ResponseWriter, r *http.Request) {
+	if err := gw.ensureFindingIgnoreSchema(r.Context()); err != nil {
+		slog.Warn("Failed ensuring finding path ignore schema", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to prepare finding path ignore schema")
+		return
+	}
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := gw.db.Exec(r.Context(), `DELETE FROM finding_path_ignore_rules WHERE id = ?`, id); err != nil {
+		slog.Warn("Failed to delete finding path ignore rule", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (gw *Gateway) handleStopJobRemediation(w http.ResponseWriter, r *http.Request) {
+	_ = gw.ensureRemediationSchema(r.Context())
+	scanJobID, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx := r.Context()
+	type row struct {
+		ID int64 `db:"id"`
+	}
+	var rows []row
+	if err := gw.db.Select(ctx, &rows, `
+		SELECT DISTINCT c.id
+		FROM remediation_campaigns c
+		INNER JOIN remediation_tasks t ON t.campaign_id = c.id
+		WHERE t.scan_job_id = ?
+		  AND c.status IN ('running','draft')
+		ORDER BY c.id ASC
+	`, scanJobID); err != nil {
+		slog.Warn("Failed to locate remediation campaigns for scan job", "scan_job_id", scanJobID, "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if len(rows) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":            "idle",
+			"scan_job_id":       scanJobID,
+			"stopped_count":     0,
+			"stopped_campaigns": []int64{},
+		})
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	ids := make([]int64, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	ph := placeholders(len(ids))
+	args := append([]any{now}, toAnyArgs(ids)...)
+	if err := gw.db.Exec(ctx,
+		fmt.Sprintf(`UPDATE remediation_campaigns
+			SET status = 'stopped',
+			    completed_at = ?,
+			    error_msg = CASE WHEN error_msg = '' THEN 'stopped by user (scan detail)' ELSE error_msg END
+		  WHERE id IN (%s)`, ph),
+		args...,
+	); err != nil {
+		slog.Warn("Failed to stop remediation campaigns for scan job", "scan_job_id", scanJobID, "error", err)
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	taskArgs := append([]any{now, scanJobID}, toAnyArgs(ids)...)
+	_ = gw.db.Exec(ctx,
+		fmt.Sprintf(`UPDATE remediation_tasks
+			SET status = 'stopped', completed_at = ?
+		  WHERE scan_job_id = ?
+		    AND campaign_id IN (%s)
+		    AND status IN ('pending','running')`, ph),
+		taskArgs...,
+	)
+	for _, id := range ids {
+		_ = gw.db.Exec(ctx, `UPDATE remediation_campaigns SET
+			total_tasks = (SELECT COUNT(*) FROM remediation_tasks WHERE campaign_id = ?),
+			pending_tasks = COALESCE((SELECT COUNT(*) FROM remediation_tasks WHERE campaign_id = ? AND status='pending'),0),
+			running_tasks = COALESCE((SELECT COUNT(*) FROM remediation_tasks WHERE campaign_id = ? AND status='running'),0),
+			completed_tasks = COALESCE((SELECT COUNT(*) FROM remediation_tasks WHERE campaign_id = ? AND status='completed'),0),
+			failed_tasks = COALESCE((SELECT COUNT(*) FROM remediation_tasks WHERE campaign_id = ? AND status='failed'),0),
+			skipped_tasks = COALESCE((SELECT COUNT(*) FROM remediation_tasks WHERE campaign_id = ? AND status='skipped'),0)
+		  WHERE id = ?`, id, id, id, id, id, id, id)
+		gw.broadcaster.send(SSEEvent{Type: "campaign.stopped", Payload: map[string]any{"campaign_id": id, "scan_job_id": scanJobID}})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":            "stopped",
+		"scan_job_id":       scanJobID,
+		"stopped_count":     len(ids),
+		"stopped_campaigns": ids,
+	})
 }
 
 func (gw *Gateway) loadFindingsFromRawOutputs(ctx context.Context, scanJobID int64) ([]jobUnifiedFinding, error) {
@@ -1990,6 +2657,359 @@ func (gw *Gateway) handleTriggerSchedule(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "triggered"})
+}
+
+type remediationCampaignRow struct {
+	ID             int64   `db:"id" json:"id"`
+	Name           string  `db:"name" json:"name"`
+	Status         string  `db:"status" json:"status"`
+	Mode           string  `db:"mode" json:"mode"`
+	AutoPR         bool    `db:"auto_pr" json:"auto_pr"`
+	FiltersJSON    string  `db:"filters_json" json:"filters_json"`
+	CreatedAt      string  `db:"created_at" json:"created_at"`
+	StartedAt      *string `db:"started_at" json:"started_at,omitempty"`
+	CompletedAt    *string `db:"completed_at" json:"completed_at,omitempty"`
+	ErrorMsg       string  `db:"error_msg" json:"error_msg,omitempty"`
+	TotalTasks     int     `db:"total_tasks" json:"total_tasks"`
+	PendingTasks   int     `db:"pending_tasks" json:"pending_tasks"`
+	RunningTasks   int     `db:"running_tasks" json:"running_tasks"`
+	CompletedTasks int     `db:"completed_tasks" json:"completed_tasks"`
+	FailedTasks    int     `db:"failed_tasks" json:"failed_tasks"`
+	SkippedTasks   int     `db:"skipped_tasks" json:"skipped_tasks"`
+}
+
+type remediationTaskRow struct {
+	ID          int64   `db:"id" json:"id"`
+	CampaignID  int64   `db:"campaign_id" json:"campaign_id"`
+	ScanJobID   int64   `db:"scan_job_id" json:"scan_job_id"`
+	Provider    string  `db:"provider" json:"provider"`
+	Owner       string  `db:"owner" json:"owner"`
+	Repo        string  `db:"repo" json:"repo"`
+	Branch      string  `db:"branch" json:"branch"`
+	CloneURL    string  `db:"clone_url" json:"clone_url,omitempty"`
+	Status      string  `db:"status" json:"status"`
+	WorkerName  string  `db:"worker_name" json:"worker_name,omitempty"`
+	ErrorMsg    string  `db:"error_msg" json:"error_msg,omitempty"`
+	CreatedAt   string  `db:"created_at" json:"created_at"`
+	StartedAt   *string `db:"started_at" json:"started_at,omitempty"`
+	CompletedAt *string `db:"completed_at" json:"completed_at,omitempty"`
+}
+
+type remediationCampaignCreateRequest struct {
+	Name       string   `json:"name"`
+	Mode       string   `json:"mode"`    // triage|semi|auto
+	AutoPR     bool     `json:"auto_pr"` // trigger PR processing for approved fixes
+	StartNow   bool     `json:"start_now"`
+	Repos      []string `json:"repos"` // owner/repo list (optional)
+	ScanJobIDs []int64  `json:"scan_job_ids,omitempty"`
+	MaxRepos   int      `json:"max_repos"` // optional limit
+	LatestOnly bool     `json:"latest_only"`
+	Scanners   []string `json:"scanners,omitempty"`
+	Kinds      []string `json:"kinds,omitempty"`
+	Severities []string `json:"severities,omitempty"`
+}
+
+func (gw *Gateway) handleAgentWorkersList(w http.ResponseWriter, r *http.Request) {
+	rows := gw.workerStatuses()
+	if rows == nil {
+		rows = []agent.WorkerStatus{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (gw *Gateway) handleListRemediationCampaigns(w http.ResponseWriter, r *http.Request) {
+	_ = gw.ensureRemediationSchema(r.Context())
+	var rows []remediationCampaignRow
+	if err := gw.db.Select(r.Context(), &rows, `SELECT * FROM remediation_campaigns ORDER BY id DESC LIMIT 200`); err != nil {
+		slog.Warn("Failed to list remediation campaigns", "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if rows == nil {
+		rows = []remediationCampaignRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (gw *Gateway) handleGetRemediationCampaign(w http.ResponseWriter, r *http.Request) {
+	_ = gw.ensureRemediationSchema(r.Context())
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var row remediationCampaignRow
+	if err := gw.db.Get(r.Context(), &row, `SELECT * FROM remediation_campaigns WHERE id = ?`, id); err != nil {
+		slog.Warn("Failed to get remediation campaign", "id", id, "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusNotFound, "campaign not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+func (gw *Gateway) handleListRemediationCampaignTasks(w http.ResponseWriter, r *http.Request) {
+	_ = gw.ensureRemediationSchema(r.Context())
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var rows []remediationTaskRow
+	if err := gw.db.Select(r.Context(), &rows, `SELECT * FROM remediation_tasks WHERE campaign_id = ? ORDER BY id ASC`, id); err != nil {
+		slog.Warn("Failed to list remediation campaign tasks", "campaign_id", id, "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if rows == nil {
+		rows = []remediationTaskRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (gw *Gateway) handleCreateRemediationCampaign(w http.ResponseWriter, r *http.Request) {
+	if err := gw.ensureRemediationSchema(r.Context()); err != nil {
+		slog.Warn("Failed ensuring remediation schema", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to prepare remediation schema")
+		return
+	}
+	var req remediationCampaignCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		req.Name = "Offline Remediation Campaign"
+	}
+	if req.Mode == "" {
+		req.Mode = "triage"
+	}
+	if req.Mode != "triage" && req.Mode != "semi" && req.Mode != "auto" {
+		writeError(w, http.StatusBadRequest, "mode must be triage, semi, or auto")
+		return
+	}
+	if req.MaxRepos < 0 {
+		req.MaxRepos = 0
+	}
+	if ids, err := normalizeDeleteIDs(req.ScanJobIDs); err != nil {
+		writeError(w, http.StatusBadRequest, "scan_job_ids must contain positive integers")
+		return
+	} else {
+		req.ScanJobIDs = ids
+	}
+	if !req.LatestOnly {
+		req.LatestOnly = true
+	}
+	filtersJSON, _ := json.Marshal(map[string]any{
+		"repos": req.Repos, "max_repos": req.MaxRepos, "latest_only": req.LatestOnly,
+		"scan_job_ids": req.ScanJobIDs,
+		"scanners":     req.Scanners, "kinds": req.Kinds, "severities": req.Severities,
+	})
+	now := time.Now().UTC().Format(time.RFC3339)
+	status := "draft"
+	startedAt := ""
+	if req.StartNow {
+		status = "running"
+		startedAt = now
+	}
+	cRow := struct {
+		Name        string `db:"name"`
+		Status      string `db:"status"`
+		Mode        string `db:"mode"`
+		AutoPR      bool   `db:"auto_pr"`
+		FiltersJSON string `db:"filters_json"`
+		CreatedAt   string `db:"created_at"`
+		StartedAt   string `db:"started_at"`
+	}{
+		Name: req.Name, Status: status, Mode: req.Mode, AutoPR: req.AutoPR, FiltersJSON: string(filtersJSON), CreatedAt: now, StartedAt: startedAt,
+	}
+	id, err := gw.db.Insert(r.Context(), "remediation_campaigns", cRow)
+	if err != nil {
+		slog.Warn("Failed to create remediation campaign", "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "create failed")
+		return
+	}
+	if err := gw.materializeRemediationCampaignTasks(r.Context(), id, req); err != nil {
+		_ = gw.db.Exec(r.Context(), `UPDATE remediation_campaigns SET status = 'failed', error_msg = ? WHERE id = ?`, err.Error(), id)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("task materialization failed: %v", err))
+		return
+	}
+	if req.StartNow {
+		gw.broadcaster.send(SSEEvent{Type: "campaign.started", Payload: map[string]any{"campaign_id": id}})
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "status": status})
+}
+
+func (gw *Gateway) handleStartRemediationCampaign(w http.ResponseWriter, r *http.Request) {
+	_ = gw.ensureRemediationSchema(r.Context())
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := gw.db.Exec(r.Context(), `UPDATE remediation_campaigns SET status = 'running', started_at = COALESCE(NULLIF(started_at,''), ?), completed_at = NULL WHERE id = ?`, now, id); err != nil {
+		slog.Warn("Failed to start remediation campaign", "id", id, "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	gw.broadcaster.send(SSEEvent{Type: "campaign.started", Payload: map[string]any{"campaign_id": id}})
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "running", "id": id})
+}
+
+func (gw *Gateway) handleStopRemediationCampaign(w http.ResponseWriter, r *http.Request) {
+	_ = gw.ensureRemediationSchema(r.Context())
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := gw.db.Exec(r.Context(), `UPDATE remediation_campaigns SET status = 'stopped', completed_at = ?, error_msg = CASE WHEN error_msg = '' THEN 'stopped by user' ELSE error_msg END WHERE id = ?`, now, id); err != nil {
+		slog.Warn("Failed to stop remediation campaign", "id", id, "error", err)
+		if hint := remediationSchemaHint(err); hint != "" {
+			writeError(w, http.StatusInternalServerError, hint)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	_ = gw.db.Exec(r.Context(), `UPDATE remediation_tasks SET status = 'stopped', completed_at = ? WHERE campaign_id = ? AND status IN ('pending','running')`, now, id)
+	gw.broadcaster.send(SSEEvent{Type: "campaign.stopped", Payload: map[string]any{"campaign_id": id}})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "id": id})
+}
+
+func (gw *Gateway) materializeRemediationCampaignTasks(ctx context.Context, campaignID int64, req remediationCampaignCreateRequest) error {
+	type scanJobLite struct {
+		ID       int64  `db:"id"`
+		Provider string `db:"provider"`
+		Owner    string `db:"owner"`
+		Repo     string `db:"repo"`
+		Branch   string `db:"branch"`
+	}
+	var rows []scanJobLite
+	if len(req.ScanJobIDs) > 0 {
+		query := fmt.Sprintf("SELECT id, provider, owner, repo, branch FROM scan_jobs WHERE id IN (%s)", placeholders(len(req.ScanJobIDs)))
+		if err := gw.db.Select(ctx, &rows, query, toAnyArgs(req.ScanJobIDs)...); err != nil {
+			return err
+		}
+		// Keep caller-specified order.
+		byID := make(map[int64]scanJobLite, len(rows))
+		for _, row := range rows {
+			byID[row.ID] = row
+		}
+		ordered := make([]scanJobLite, 0, len(rows))
+		for _, id := range req.ScanJobIDs {
+			if row, ok := byID[id]; ok {
+				ordered = append(ordered, row)
+			}
+		}
+		rows = ordered
+	} else {
+		if err := gw.db.Select(ctx, &rows, `SELECT id, provider, owner, repo, branch FROM scan_jobs ORDER BY id DESC LIMIT 2000`); err != nil {
+			return err
+		}
+	}
+	repoFilter := map[string]struct{}{}
+	for _, r := range req.Repos {
+		r = strings.TrimSpace(strings.ToLower(r))
+		if r == "" {
+			continue
+		}
+		repoFilter[r] = struct{}{}
+	}
+	seenRepo := map[string]struct{}{}
+	providers := gw.orch.RepoProvidersForPreview()
+	now := time.Now().UTC().Format(time.RFC3339)
+	count := 0
+	for _, row := range rows {
+		key := strings.ToLower(row.Owner + "/" + row.Repo)
+		if len(repoFilter) > 0 {
+			if _, ok := repoFilter[key]; !ok {
+				continue
+			}
+		}
+		if req.LatestOnly {
+			if _, ok := seenRepo[key]; ok {
+				continue
+			}
+			seenRepo[key] = struct{}{}
+		}
+		cloneURL := ""
+		if p := pickRepoProviderByName(providers, row.Provider); p != nil {
+			if repo, err := p.GetRepo(ctx, row.Owner, row.Repo); err == nil {
+				cloneURL = repo.CloneURL
+				if row.Branch == "" {
+					row.Branch = repo.DefaultBranch
+				}
+			}
+		}
+		if cloneURL == "" {
+			cloneURL = fallbackCloneURL(row.Provider, row.Owner, row.Repo)
+		}
+		task := struct {
+			CampaignID int64  `db:"campaign_id"`
+			ScanJobID  int64  `db:"scan_job_id"`
+			Provider   string `db:"provider"`
+			Owner      string `db:"owner"`
+			Repo       string `db:"repo"`
+			Branch     string `db:"branch"`
+			CloneURL   string `db:"clone_url"`
+			Status     string `db:"status"`
+			CreatedAt  string `db:"created_at"`
+		}{
+			CampaignID: campaignID, ScanJobID: row.ID, Provider: row.Provider, Owner: row.Owner, Repo: row.Repo,
+			Branch: firstNonEmpty(row.Branch, "main"), CloneURL: cloneURL, Status: "pending", CreatedAt: now,
+		}
+		if _, err := gw.db.Insert(ctx, "remediation_tasks", task); err != nil {
+			continue
+		}
+		count++
+		if req.MaxRepos > 0 && count >= req.MaxRepos {
+			break
+		}
+	}
+	return gw.db.Exec(ctx, `UPDATE remediation_campaigns SET total_tasks=?, pending_tasks=? WHERE id = ?`, count, count, campaignID)
+}
+
+func pickRepoProviderByName(providers []repository.RepoProvider, name string) repository.RepoProvider {
+	for _, p := range providers {
+		if p.Name() == name {
+			return p
+		}
+	}
+	return nil
+}
+
+func fallbackCloneURL(provider, owner, repo string) string {
+	switch provider {
+	case "github":
+		return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	case "gitlab":
+		return fmt.Sprintf("https://gitlab.com/%s/%s.git", owner, repo)
+	default:
+		return ""
+	}
 }
 
 // handleEvents streams SSE to the client. Each line is a JSON SSEEvent.

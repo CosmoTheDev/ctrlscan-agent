@@ -82,6 +82,21 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	if cfg.AI.Model != "" {
 		aiModel = cfg.AI.Model
 	}
+	const customModelSentinel = "__custom__"
+	var aiModelChoice string
+	switch aiModel {
+	case "gpt-5.2", "gpt-5.1", "gpt-5.1-codex", "gpt-5", "gpt-5-codex", "gpt-5-chat-latest",
+		"gpt-4.1", "gpt-4o", "o1", "o3",
+		"gpt-5.1-codex-mini", "gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini", "gpt-4.1-nano",
+		"gpt-4o-mini", "o1-mini", "o3-mini", "o4-mini", "codex-mini-latest":
+		aiModelChoice = aiModel
+	default:
+		aiModelChoice = customModelSentinel
+	}
+	var customAIModel string
+	if aiModelChoice == customModelSentinel {
+		customAIModel = aiModel
+	}
 
 	aiForm := huh.NewForm(
 		huh.NewGroup(
@@ -93,18 +108,47 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 				Value(&openAIKey),
 			huh.NewSelect[string]().
 				Title("Default model").
-				Description("Only used when an API key is set").
+				Description("Only used when an API key is set. Choose from common options or enter a custom model ID.").
 				Options(
-					huh.NewOption("gpt-4o (recommended)", "gpt-4o"),
-					huh.NewOption("gpt-4o-mini (cheaper)", "gpt-4o-mini"),
-					huh.NewOption("o3-mini (reasoning)", "o3-mini"),
-					huh.NewOption("gpt-4-turbo", "gpt-4-turbo"),
+					huh.NewOption("gpt-5.1-codex (high quality coding)", "gpt-5.1-codex"),
+					huh.NewOption("gpt-5-codex (coding)", "gpt-5-codex"),
+					huh.NewOption("gpt-5.2", "gpt-5.2"),
+					huh.NewOption("gpt-5.1", "gpt-5.1"),
+					huh.NewOption("gpt-5", "gpt-5"),
+					huh.NewOption("gpt-5-chat-latest", "gpt-5-chat-latest"),
+					huh.NewOption("gpt-4.1", "gpt-4.1"),
+					huh.NewOption("gpt-4o", "gpt-4o"),
+					huh.NewOption("o3", "o3"),
+					huh.NewOption("o1", "o1"),
+					huh.NewOption("gpt-5.1-codex-mini", "gpt-5.1-codex-mini"),
+					huh.NewOption("gpt-5-mini", "gpt-5-mini"),
+					huh.NewOption("gpt-5-nano", "gpt-5-nano"),
+					huh.NewOption("gpt-4.1-mini", "gpt-4.1-mini"),
+					huh.NewOption("gpt-4.1-nano", "gpt-4.1-nano"),
+					huh.NewOption("gpt-4o-mini", "gpt-4o-mini"),
+					huh.NewOption("o4-mini", "o4-mini"),
+					huh.NewOption("o3-mini", "o3-mini"),
+					huh.NewOption("o1-mini", "o1-mini"),
+					huh.NewOption("codex-mini-latest", "codex-mini-latest"),
+					huh.NewOption("Custom model ID…", customModelSentinel),
 				).
-				Value(&aiModel),
+				Value(&aiModelChoice),
+			huh.NewInput().
+				Title("Custom model ID (optional)").
+				Description("Only used if 'Custom model ID…' is selected above. Example: gpt-5.1-codex").
+				Placeholder("gpt-5.1-codex").
+				Value(&customAIModel),
 		),
 	)
 	if err := aiForm.Run(); err != nil {
 		return err
+	}
+	if aiModelChoice == customModelSentinel {
+		if strings.TrimSpace(customAIModel) != "" {
+			aiModel = strings.TrimSpace(customAIModel)
+		}
+	} else {
+		aiModel = aiModelChoice
 	}
 	if openAIKey != "" {
 		cfg.AI.Provider = "openai"

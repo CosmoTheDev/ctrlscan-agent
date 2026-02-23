@@ -38,6 +38,7 @@
       <section id="view-overview" class="view active"></section>
       <section id="view-scans" class="view"></section>
       <section id="view-scan-detail" class="view"></section>
+      <section id="view-remediation" class="view"></section>
       <section id="view-cron" class="view"></section>
       <section id="view-agents" class="view"></section>
       <section id="view-config" class="view"></section>
@@ -128,6 +129,41 @@
       <div class="modal-footer">
         <button id="promptModalCancel" class="btn btn-secondary">Cancel</button>
         <button id="promptModalOk" class="btn btn-danger">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="pathIgnoreModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="pathIgnoreModalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="pathIgnoreModalTitle">Finding Path Ignore Rules</h2>
+          <p>Ignore findings whose path/package contains configured substrings (for UI and AI remediation triage).</p>
+        </div>
+        <button id="pathIgnoreModalClose" class="btn btn-secondary">Close</button>
+      </div>
+      <div class="modal-body">
+        <div class="card">
+          <div class="toolbar">
+            <input id="pathIgnoreNewSubstring" placeholder="Substring (e.g. vendor/ or /test/)" style="min-width:260px">
+            <input id="pathIgnoreNewNote" placeholder="Optional note" style="min-width:220px">
+            <button id="pathIgnoreAddBtn" class="btn btn-primary">Add Rule</button>
+          </div>
+          <div class="toolbar" id="pathIgnoreSuggestionBar"></div>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Enabled</th><th>Substring</th><th>Note</th><th>Updated</th><th>Actions</th></tr></thead>
+              <tbody id="pathIgnoreRulesBody">
+                <tr><td colspan="5" class="muted">Loading rules…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="pathIgnoreModalDone" class="btn btn-secondary">Done</button>
       </div>
     </div>
   </div>

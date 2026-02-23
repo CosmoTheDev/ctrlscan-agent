@@ -612,6 +612,10 @@ function renderScans() {
 function renderScanDetailPage() {
   const root = document.getElementById("view-scan-detail");
   const selectedJob = state.selectedJob;
+  if (!selectedJob) {
+    root.innerHTML = `<div class="card"><div class="muted">No scan selected. Open a job from the Scans page.</div></div>`;
+    return;
+  }
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
   const filters = state.scanDetailFindingsFilters || { kind: "", scanner: "", severity: "" };
@@ -642,10 +646,6 @@ function renderScanDetailPage() {
   const fixes = state.selectedJobFixes || [];
   const aiEnabled = !!state.agent?.ai_enabled;
   const mode = state.agent?.mode || "triage";
-  if (!selectedJob) {
-    root.innerHTML = `<div class="card"><div class="muted">No scan selected. Open a job from the Scans page.</div></div>`;
-    return;
-  }
   root.innerHTML = `
     <div class="scan-detail-layout">
       <div class="card">

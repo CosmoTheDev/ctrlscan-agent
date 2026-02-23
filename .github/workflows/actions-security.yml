@@ -7,17 +7,19 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  security-events: write
+permissions: {}
 
 jobs:
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install actionlint
         run: bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
@@ -33,7 +35,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
@@ -50,7 +52,7 @@ jobs:
 
       - name: Upload zizmor SARIF
         if: ${{ always() && hashFiles('reports/zizmor.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         with:
           sarif_file: reports/zizmor.sarif
           category: zizmor
@@ -63,27 +65,32 @@ jobs:
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          go-version: stable
+          persist-credentials: false
 
       - name: Install octoscan
-        run: go install github.com/synacktiv/octoscan@latest
+        run: |
+          OCTOSCAN_VERSION="0.1.6"
+          curl -sSfL -o /tmp/octoscan \
+            "https://github.com/synacktiv/octoscan/releases/download/v${OCTOSCAN_VERSION}/octoscan"
+          install -m 0755 /tmp/octoscan /usr/local/bin/octoscan
+          octoscan version || octoscan --help | head -1
 
       - name: Run octoscan
         continue-on-error: true
         run: |
           mkdir -p reports
-          find .github/workflows -name '*.yml' -o -name '*.yaml' | while read -r f; do
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -f "$f" ] || continue
             echo "--- Scanning: $f ---"
             octoscan scan "$f" || true
           done
           # Produce SARIF for Code Scanning
-          find .github/workflows -name '*.yml' -o -name '*.yaml' | while read -r f; do
-            octoscan scan --format sarif "$f" 2>/dev/null
+          sarif_files=()
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -f "$f" ] || continue
+            octoscan scan --format sarif "$f" 2>/dev/null && sarif_files+=("$f")
           done | jq -s '
             if length == 0 then empty
             else .[0] as $base |
@@ -93,7 +100,7 @@ jobs:
 
       - name: Upload octoscan SARIF
         if: ${{ always() && hashFiles('reports/octoscan.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         with:
           sarif_file: reports/octoscan.sarif
           category: octoscan
@@ -106,7 +113,9 @@ jobs:
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install poutine
         run: |
@@ -125,9 +134,17 @@ jobs:
           mkdir -p reports
           poutine analyze_local . --format sarif > reports/poutine.sarif
 
+      - name: Sanitize poutine SARIF
+        if: ${{ always() && hashFiles('reports/poutine.sarif') != '' }}
+        run: |
+          # poutine emits invalid GUIDs in supportedTaxonomies; strip them to pass SARIF validation
+          jq '(.runs[]?.tool.driver.supportedTaxonomies // []) |= map(del(.guid))' \
+            reports/poutine.sarif > reports/poutine.sarif.tmp
+          mv reports/poutine.sarif.tmp reports/poutine.sarif
+
       - name: Upload poutine SARIF
         if: ${{ always() && hashFiles('reports/poutine.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         with:
           sarif_file: reports/poutine.sarif
           category: poutine

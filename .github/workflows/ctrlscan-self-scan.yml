@@ -500,6 +500,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload scan artifacts
+        id: upload_artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -530,6 +531,9 @@ jobs:
               ].join('\n');
             } else {
               const fs = require('fs');
+              const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+              const artifactId = '${{ steps.upload_artifacts.outputs.artifact-id }}';
+              const artifactUrl = artifactId ? `${runUrl}/artifacts/${artifactId}` : '';
               let findingsPreview = '';
               try {
                 if (fs.existsSync('reports/findings-top.md')) {
@@ -542,7 +546,9 @@ jobs:
                     '',
                     ...lines,
                     '',
-                    '_See `ctrlscan-self-scan-reports` artifact for the full exported findings preview._',
+                    artifactUrl
+                      ? `_See [ctrlscan-self-scan-reports artifact](${artifactUrl}) for the full exported findings preview._`
+                      : '_See `ctrlscan-self-scan-reports` artifact on the workflow run for the full exported findings preview._',
                   ].join('\n');
                 }
               } catch (e) {
@@ -574,7 +580,10 @@ jobs:
                 '|---:|---:|---:|---:|',
                 '| ${{ steps.parse.outputs.critical }} | ${{ steps.parse.outputs.high }} | ${{ steps.parse.outputs.medium }} | ${{ steps.parse.outputs.low }} |',
                 '',
-                'Artifacts: see `ctrlscan-self-scan-reports` on this workflow run.',
+                `Workflow run: ${runUrl}`,
+                artifactUrl
+                  ? `Artifacts: [ctrlscan-self-scan-reports](${artifactUrl})`
+                  : 'Artifacts: see `ctrlscan-self-scan-reports` on the workflow run page.',
                 findingsPreview,
               ].join('\n');
             }

@@ -18,10 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Use a patched Go toolchain in CI to avoid standard-library CVEs
           # reported by govulncheck against the exact go.mod patch version.
@@ -56,7 +58,7 @@ jobs:
 
       - name: Upload gosec SARIF
         if: ${{ always() && hashFiles('reports/gosec.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         with:
           sarif_file: reports/gosec.sarif
 
@@ -64,10 +66,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.34.1
+        uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
         with:
           scan-type: fs
           scan-ref: .
@@ -78,7 +82,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         with:
           sarif_file: trivy-results.sarif
 
@@ -86,9 +90,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install gitleaks
         shell: bash
@@ -104,10 +109,13 @@ jobs:
       - name: Gitleaks scan
         id: gitleaks
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORCED: ${{ github.event.forced }}
         run: |
           set +e
           mkdir -p reports
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.forced }}" = "true" ]; then
+          if [ "$EVENT_NAME" = "push" ] && [ "$FORCED" = "true" ]; then
             echo "Forced push detected; using filesystem scan fallback (no git diff range)."
             gitleaks dir . \
               --redact \
@@ -127,22 +135,23 @@ jobs:
 
       - name: Upload Gitleaks SARIF
         if: ${{ always() && hashFiles('reports/gitleaks.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4
         with:
           sarif_file: reports/gitleaks.sarif
 
       - name: Fail on leaks / scan errors
         if: ${{ always() }}
         shell: bash
+        env:
+          GITLEAKS_EXIT: ${{ steps.gitleaks.outputs.exit_code }}
         run: |
-          ec="${{ steps.gitleaks.outputs.exit_code }}"
           # gitleaks returns 0 = no leaks, 1 = error, 2 = leaks found
-          if [ "$ec" = "0" ]; then
+          if [ "$GITLEAKS_EXIT" = "0" ]; then
             exit 0
           fi
-          if [ "$ec" = "2" ]; then
+          if [ "$GITLEAKS_EXIT" = "2" ]; then
             echo "::error::Gitleaks detected secrets."
             exit 1
           fi
-          echo "::error::Gitleaks scan failed (exit code $ec)."
+          echo "::error::Gitleaks scan failed (exit code $GITLEAKS_EXIT)."
           exit 1

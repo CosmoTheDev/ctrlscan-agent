@@ -718,11 +718,11 @@ func (gw *Gateway) handleJobsSummary(w http.ResponseWriter, r *http.Request) {
 	if err := gw.db.Get(r.Context(), &out, `
 		SELECT
 		  COUNT(*) AS total_jobs,
-		  SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
-		  SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-		  SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) AS partial,
-		  SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-		  SUM(CASE WHEN status = 'stopped' THEN 1 ELSE 0 END) AS stopped,
+		  COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running,
+		  COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
+		  COALESCE(SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END), 0) AS partial,
+		  COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+		  COALESCE(SUM(CASE WHEN status = 'stopped' THEN 1 ELSE 0 END), 0) AS stopped,
 		  COALESCE(SUM(findings_critical), 0) AS critical,
 		  COALESCE(SUM(findings_high), 0) AS high,
 		  COALESCE(SUM(findings_medium), 0) AS medium,

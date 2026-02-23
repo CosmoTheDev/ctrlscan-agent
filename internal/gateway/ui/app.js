@@ -572,17 +572,17 @@ function renderScans() {
           <table>
             <thead><tr><th>Name</th><th>Status</th><th>Action</th><th>Repo</th><th>Job</th><th>Message</th><th>Updated</th></tr></thead>
             <tbody>
-              ${(scanWorkers.length ? scanWorkers : []).map(w => `
-                <tr>
-                  <td>${escapeHtml(w.name || "")}</td>
-                  <td><span class="${statusClass(w.status)}">${escapeHtml(w.status || "")}</span></td>
+	              ${scanWorkers.length ? scanWorkers.map(w => `
+	                <tr>
+	                  <td>${escapeHtml(w.name || "")}</td>
+	                  <td><span class="${statusClass(w.status)}">${escapeHtml(w.status || "")}</span></td>
                   <td>${escapeHtml(w.action || "")}</td>
                   <td>${escapeHtml(w.repo || "")}</td>
                   <td>${w.scan_job_id ? `#${w.scan_job_id}` : `<span class="muted">-</span>`}</td>
                   <td class="muted">${escapeHtml(w.message || "")}</td>
                   <td class="muted">${escapeHtml(fmtDate(w.updated_at))}</td>
-                </tr>
-              `).join("") : `<tr><td colspan="7" class="muted">No scan worker telemetry yet. Trigger a scan to populate live worker activity.</td></tr>`}
+	                </tr>
+	              `).join("") : `<tr><td colspan="7" class="muted">No scan worker telemetry yet. Trigger a scan to populate live worker activity.</td></tr>`}
             </tbody>
           </table>
         </div>

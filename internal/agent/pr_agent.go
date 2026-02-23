@@ -86,6 +86,14 @@ func (a *PRAgent) drainApprovedFixes(ctx context.Context) {
 			PRURL:       row.PRURL,
 		}
 		if err := a.createPR(ctx, fix); err != nil {
+			if isRetryablePRCreationError(err) {
+				slog.Warn("PR creation delayed; will retry",
+					"fix_id", fix.ID,
+					"error", err,
+				)
+				// Keep status=approved so the PR worker can retry on the next pass.
+				continue
+			}
 			slog.Error("PR creation failed", "fix_id", fix.ID, "error", err)
 			_ = a.db.Exec(ctx,
 				`UPDATE fix_queue SET status = 'pr_failed' WHERE id = ?`, fix.ID)
@@ -97,8 +105,17 @@ func (a *PRAgent) createPR(ctx context.Context, fix models.FixQueue) error {
 	slog.Info("Creating PR for fix", "fix_id", fix.ID)
 
 	// Load the scan job to get repo details.
-	var job models.ScanJob
-	if err := a.db.Get(ctx, &job, `SELECT * FROM scan_jobs WHERE id = ?`, fix.ScanJobID); err != nil {
+	var job struct {
+		ID       int64  `db:"id"`
+		Provider string `db:"provider"`
+		Owner    string `db:"owner"`
+		Repo     string `db:"repo"`
+		Branch   string `db:"branch"`
+	}
+	if err := a.db.Get(ctx, &job, `
+		SELECT id, provider, owner, repo, branch
+		FROM scan_jobs
+		WHERE id = ?`, fix.ScanJobID); err != nil {
 		return fmt.Errorf("loading scan job: %w", err)
 	}
 
@@ -108,17 +125,39 @@ func (a *PRAgent) createPR(ctx context.Context, fix models.FixQueue) error {
 		return fmt.Errorf("building provider: %w", err)
 	}
 
-	// Fork the upstream repo.
+	// Prefer fork-based PRs, but fall back to direct-branch PRs when forking
+	// fails and the token has write access to the upstream repository.
+	var (
+		cloneURL string
+		headRef  string
+		forkMode bool
+	)
 	fork, err := provider.ForkRepo(ctx, job.Owner, job.Repo)
 	if err != nil {
-		return fmt.Errorf("forking %s/%s: %w", job.Owner, job.Repo, err)
+		slog.Warn("Fork failed; attempting direct PR fallback",
+			"owner", job.Owner,
+			"repo", job.Repo,
+			"error", err,
+		)
+		upstream, getErr := provider.GetRepo(ctx, job.Owner, job.Repo)
+		if getErr != nil {
+			return fmt.Errorf("forking %s/%s: %w (direct fallback get repo failed: %v)", job.Owner, job.Repo, err, getErr)
+		}
+		cloneURL = upstream.CloneURL
+		forkMode = false
+	} else {
+		cloneURL = fork.CloneURL
+		forkMode = true
 	}
 
-	// Clone the fork to a temp directory.
+	// Clone target remote (fork preferred, upstream on fallback) to a temp directory.
 	cm := repository.NewCloneManager(a.cfg.Tools.BinDir)
-	cloneResult, err := cm.Clone(ctx, fork.CloneURL, provider.AuthToken(), job.Branch)
+	cloneResult, err := cm.Clone(ctx, cloneURL, provider.AuthToken(), job.Branch)
 	if err != nil {
-		return fmt.Errorf("cloning fork: %w", err)
+		if forkMode {
+			return fmt.Errorf("cloning fork: %w", err)
+		}
+		return fmt.Errorf("cloning upstream for direct PR fallback: %w", err)
 	}
 	defer cm.Cleanup(cloneResult)
 
@@ -140,8 +179,21 @@ func (a *PRAgent) createPR(ctx context.Context, fix models.FixQueue) error {
 	}
 
 	// Push branch.
-	if err := gitPush(cloneResult.LocalPath, branchName, provider.AuthToken(), fork.CloneURL); err != nil {
-		return fmt.Errorf("pushing branch: %w", err)
+	if err := gitPush(cloneResult.LocalPath, branchName, provider.AuthToken(), cloneURL); err != nil {
+		if forkMode {
+			return fmt.Errorf("pushing fork branch: %w", err)
+		}
+		return fmt.Errorf("pushing direct branch to upstream: %w", err)
+	}
+	if forkMode {
+		// GitHub/GitLab generally require the fork owner's branch namespace.
+		// If owner is empty for any reason, fall back to bare branch.
+		if strings.TrimSpace(fork.Owner) != "" {
+			headRef = fmt.Sprintf("%s:%s", fork.Owner, branchName)
+		}
+	}
+	if headRef == "" {
+		headRef = branchName
 	}
 
 	// Generate PR description.
@@ -156,7 +208,7 @@ func (a *PRAgent) createPR(ctx context.Context, fix models.FixQueue) error {
 		Repo:       job.Repo,
 		Title:      prDesc.Title,
 		Body:       prDesc.Body,
-		HeadBranch: branchName,
+		HeadBranch: headRef,
 		BaseBranch: job.Branch,
 		Draft:      a.cfg.Agent.Mode == "triage", // draft in triage mode
 	})
@@ -234,4 +286,22 @@ func injectToken(repoURL, token string) string {
 	}
 	parts := strings.SplitN(repoURL, "://", 2)
 	return parts[0] + "://ctrlscan:" + token + "@" + parts[1]
+}
+
+func isRetryablePRCreationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "job scheduled on github side"),
+		strings.Contains(msg, "try again later"),
+		strings.Contains(msg, "rate limit"),
+		strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "temporar"),
+		strings.Contains(msg, "5xx"):
+		return true
+	default:
+		return false
+	}
 }

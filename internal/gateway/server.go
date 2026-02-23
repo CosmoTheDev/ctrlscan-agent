@@ -48,6 +48,12 @@ func New(cfg *config.Config, db database.DB) *Gateway {
 		OnRepoSkipped: func(payload map[string]any) {
 			b.send(SSEEvent{Type: "repo.skipped", Payload: payload})
 		},
+		OnWorkerStatus: func(payload map[string]any) {
+			b.send(SSEEvent{Type: "worker.status", Payload: payload})
+		},
+		OnRemediationEvent: func(eventType string, payload map[string]any) {
+			b.send(SSEEvent{Type: eventType, Payload: payload})
+		},
 	})
 
 	gw := &Gateway{
@@ -60,6 +66,13 @@ func New(cfg *config.Config, db database.DB) *Gateway {
 	}
 	gw.scheduler = newScheduler(db, gw.trigger, b.send)
 	return gw
+}
+
+func (gw *Gateway) workerStatuses() []agent.WorkerStatus {
+	if gw.orch == nil {
+		return nil
+	}
+	return gw.orch.WorkerStatuses()
 }
 
 // SetConfigPath stores the CLI-resolved config path so config API writes back to the same file.

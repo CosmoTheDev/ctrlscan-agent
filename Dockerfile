@@ -45,5 +45,8 @@ ENV HOME=/home/ctrlscan
 
 VOLUME ["/home/ctrlscan/.ctrlscan"]
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ctrlscan --help >/dev/null || exit 1
+
 ENTRYPOINT ["ctrlscan"]
 CMD ["--help"]

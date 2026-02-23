@@ -78,6 +78,7 @@ type FixQueue struct {
 	ScanJobID    int64      `json:"scan_job_id"   db:"scan_job_id"`
 	FindingType  string     `json:"finding_type"  db:"finding_type"`  // sca|sast|secrets|iac
 	FindingID    int64      `json:"finding_id"    db:"finding_id"`
+	FindingRef   string     `json:"finding_ref"   db:"finding_ref"`
 	Patch        string     `json:"patch"         db:"patch"`          // unified diff
 	PRTitle      string     `json:"pr_title"      db:"pr_title"`
 	PRBody       string     `json:"pr_body"       db:"pr_body"`

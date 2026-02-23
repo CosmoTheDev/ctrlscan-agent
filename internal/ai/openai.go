@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,10 +22,12 @@ const defaultOpenAIBase = "https://api.openai.com/v1"
 
 // OpenAIProvider implements AIProvider using the OpenAI REST API.
 type OpenAIProvider struct {
-	apiKey  string
-	model   string
-	baseURL string
-	client  *http.Client
+	apiKey       string
+	model        string
+	baseURL      string
+	client       *http.Client
+	debug        bool
+	debugPrompts bool
 }
 
 // NewOpenAI creates an OpenAIProvider from cfg.
@@ -30,15 +36,24 @@ func NewOpenAI(cfg config.AIConfig) (*OpenAIProvider, error) {
 	if base == "" {
 		base = defaultOpenAIBase
 	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("invalid OpenAI base URL: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return nil, fmt.Errorf("invalid OpenAI base URL scheme %q", u.Scheme)
+	}
 	model := cfg.Model
 	if model == "" {
 		model = "gpt-4o"
 	}
 	return &OpenAIProvider{
-		apiKey:  cfg.OpenAIKey,
-		model:   model,
-		baseURL: strings.TrimRight(base, "/"),
-		client:  &http.Client{Timeout: 120 * time.Second},
+		apiKey:       cfg.OpenAIKey,
+		model:        model,
+		baseURL:      strings.TrimRight(base, "/"),
+		client:       &http.Client{Timeout: 120 * time.Second},
+		debug:        strings.EqualFold(strings.TrimSpace(os.Getenv("CTRLSCAN_OPENAI_DEBUG")), "1") || strings.EqualFold(strings.TrimSpace(os.Getenv("CTRLSCAN_OPENAI_DEBUG")), "true"),
+		debugPrompts: strings.EqualFold(strings.TrimSpace(os.Getenv("CTRLSCAN_OPENAI_DEBUG_PROMPTS")), "1") || strings.EqualFold(strings.TrimSpace(os.Getenv("CTRLSCAN_OPENAI_DEBUG_PROMPTS")), "true"),
 	}, nil
 }
 
@@ -51,6 +66,7 @@ func (o *OpenAIProvider) IsAvailable(ctx context.Context) bool {
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	// #nosec G107,G704 -- baseURL is loaded from trusted local config and validated in NewOpenAI.
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return false
@@ -196,9 +212,10 @@ Return ONLY valid JSON with "title" and "body" fields. No markdown code blocks.`
 // --- Internal ---
 
 type openAIRequest struct {
-	Model     string        `json:"model"`
-	Messages  []openAIMsg   `json:"messages"`
-	MaxTokens int           `json:"max_tokens,omitempty"`
+	Model               string      `json:"model"`
+	Messages            []openAIMsg `json:"messages"`
+	MaxTokens           int         `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int         `json:"max_completion_tokens,omitempty"`
 }
 
 type openAIMsg struct {
@@ -224,7 +241,11 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 			{Role: "system", Content: "You are an expert security engineer assisting with vulnerability remediation."},
 			{Role: "user", Content: prompt},
 		},
-		MaxTokens: maxTokens,
+	}
+	if usesMaxCompletionTokensParam(o.model) {
+		payload.MaxCompletionTokens = maxTokens
+	} else {
+		payload.MaxTokens = maxTokens
 	}
 
 	body, err := json.Marshal(payload)
@@ -232,27 +253,66 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 		return "", fmt.Errorf("marshalling request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		o.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("calling OpenAI API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reading response body: %w", err)
+	if o.debug {
+		slog.Info("OpenAI request",
+			"model", o.model,
+			"max_tokens", maxTokens,
+			"prompt_chars", len(prompt),
+			"request_bytes", len(body),
+		)
+		if o.debugPrompts {
+			slog.Info("OpenAI prompt body", "prompt", prompt)
+		}
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OpenAI API error %d: %s", resp.StatusCode, string(respBody))
+	const maxAttempts = 6
+	var respBody []byte
+	var respStatus int
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			o.baseURL+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return "", fmt.Errorf("creating request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		// #nosec G107,G704 -- baseURL is loaded from trusted local config and validated in NewOpenAI.
+		resp, err := o.client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("calling OpenAI API: %w", err)
+		}
+		respStatus = resp.StatusCode
+		respBody, err = io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if err != nil {
+			return "", fmt.Errorf("reading response body: %w", err)
+		}
+		if closeErr != nil {
+			slog.Debug("closing OpenAI response body", "error", closeErr)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxAttempts {
+			wait := openAIRetryDelay(resp.Header.Get("Retry-After"), string(respBody), attempt)
+			slog.Warn("OpenAI rate limited; retrying",
+				"attempt", attempt,
+				"max_attempts", maxAttempts,
+				"wait", wait.String(),
+				"model", o.model,
+			)
+			if err := sleepWithContext(ctx, wait); err != nil {
+				return "", err
+			}
+			continue
+		}
+		break
+	}
+
+	if respStatus != http.StatusOK {
+		return "", fmt.Errorf("OpenAI API error %d: %s", respStatus, string(respBody))
 	}
 
 	var apiResp openAIResponse
@@ -269,4 +329,66 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 	}
 
 	return strings.TrimSpace(apiResp.Choices[0].Message.Content), nil
+}
+
+func usesMaxCompletionTokensParam(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(m, "gpt-5"):
+		return true
+	case strings.Contains(m, "codex"):
+		return true
+	case strings.HasPrefix(m, "o1"),
+		strings.HasPrefix(m, "o3"),
+		strings.HasPrefix(m, "o4"):
+		return true
+	default:
+		return false
+	}
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+func openAIRetryDelay(retryAfterHeader, body string, attempt int) time.Duration {
+	if ra := strings.TrimSpace(retryAfterHeader); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	bl := strings.ToLower(body)
+	if idx := strings.Index(bl, "please try again in "); idx >= 0 {
+		rest := bl[idx+len("please try again in "):]
+		fields := strings.Fields(rest)
+		if len(fields) > 0 {
+			token := strings.Trim(fields[0], ".,")
+			if strings.HasSuffix(token, "ms") {
+				if n, err := strconv.ParseFloat(strings.TrimSuffix(token, "ms"), 64); err == nil && n > 0 {
+					return time.Duration(n * float64(time.Millisecond))
+				}
+			}
+			if strings.HasSuffix(token, "s") {
+				if n, err := strconv.ParseFloat(strings.TrimSuffix(token, "s"), 64); err == nil && n > 0 {
+					return time.Duration(n * float64(time.Second))
+				}
+			}
+		}
+	}
+	// Exponential-ish fallback with a cap.
+	d := time.Duration(attempt*attempt) * 500 * time.Millisecond
+	if d > 8*time.Second {
+		d = 8 * time.Second
+	}
+	return d
 }

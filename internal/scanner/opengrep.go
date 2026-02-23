@@ -1,11 +1,13 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 
 	"github.com/CosmoTheDev/ctrlscan-agent/models"
 )
@@ -32,8 +34,7 @@ func (l *opengrepStringList) UnmarshalJSON(data []byte) error {
 		}
 		return nil
 	}
-	var anyVal interface{}
-	if err := json.Unmarshal(data, &anyVal); err == nil && anyVal == nil {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		*l = nil
 		return nil
 	}
@@ -114,7 +115,19 @@ func (o *OpengrepScanner) Scan(ctx context.Context, opts ScanOptions) (*ScanResu
 		if !isExitCode(err, 1) {
 			var exitErr *exec.ExitError
 			if isExitError(err, &exitErr) {
-				slog.Debug("opengrep stderr", "output", string(exitErr.Stderr))
+				stderr := compactScannerOutput(string(exitErr.Stderr), 1200)
+				stdout := compactScannerOutput(string(out), 600)
+				slog.Warn("opengrep process failed",
+					"stderr", stderr,
+					"stdout", stdout,
+				)
+				detail := stderr
+				if detail == "" {
+					detail = stdout
+				}
+				if detail != "" {
+					return nil, fmt.Errorf("executing opengrep: %w (detail: %s)", err, detail)
+				}
 			}
 			return nil, fmt.Errorf("executing opengrep: %w", err)
 		}
@@ -137,6 +150,25 @@ func (o *OpengrepScanner) Scan(ctx context.Context, opts ScanOptions) (*ScanResu
 
 	o.parseFindings(out, result)
 	return result, nil
+}
+
+func compactScannerOutput(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	s = strings.Join(lines, " | ")
+	s = strings.Join(strings.Fields(s), " ")
+	if max > 0 && len(s) > max {
+		return s[:max-3] + "..."
+	}
+	return s
 }
 
 func (o *OpengrepScanner) parseFindings(data []byte, result *ScanResult) {

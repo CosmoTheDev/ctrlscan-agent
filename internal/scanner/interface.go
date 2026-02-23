@@ -22,6 +22,13 @@ type ScanOptions struct {
 	BinDir string
 	// UseDocker forces execution via docker even if local binary is present.
 	UseDocker bool
+	// Context metadata for enriched logs/telemetry.
+	JobID    int64
+	Provider string
+	Owner    string
+	Repo     string
+	Branch   string
+	Commit   string
 }
 
 // ScanResult holds the parsed output from a single scanner run.

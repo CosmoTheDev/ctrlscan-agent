@@ -342,15 +342,21 @@ jobs:
           DB_PATH: ${{ steps.paths.outputs.db_path }}
           REPORT_DIR: ${{ steps.paths.outputs.report_dir }}
           JOB_ID: ${{ steps.parse.outputs.job_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, sqlite3
+          import json, os, re, sqlite3
 
           db_path = os.environ["DB_PATH"]
           report_dir = os.environ["REPORT_DIR"]
           job_id = int(os.environ["JOB_ID"])
           out = os.environ["GITHUB_OUTPUT"]
+          repo_slug = os.environ.get("GITHUB_REPOSITORY", "").strip()
+          head_sha = os.environ.get("HEAD_SHA", "").strip()
+          github_server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
 
           os.makedirs(report_dir, exist_ok=True)
           con = sqlite3.connect(db_path)
@@ -401,6 +407,30 @@ jobs:
 
           details_source = "sqlite"
 
+          clone_prefix_re = re.compile(r"^/tmp/ctrlscan-clone-\d+/")
+
+          def normalize_location(loc):
+              loc = str(loc or "")
+              if not loc:
+                  return loc
+              return clone_prefix_re.sub("", loc)
+
+          def split_path_line(loc):
+              loc = normalize_location(loc)
+              m = re.match(r"^(.*):(\d+)$", loc)
+              if not m:
+                  return loc, None
+              return m.group(1), int(m.group(2))
+
+          def github_blob_link(path, line_no):
+              if not repo_slug or not head_sha or not path:
+                  return ""
+              if path.startswith("/") or "@" in path:
+                  return ""
+              if line_no and line_no > 0:
+                  return f"{github_server}/{repo_slug}/blob/{head_sha}/{path}#L{line_no}"
+              return f"{github_server}/{repo_slug}/blob/{head_sha}/{path}"
+
           def to_text(b):
               if b is None:
                   return ""
@@ -409,11 +439,16 @@ jobs:
               return str(b)
 
           def append_finding(kind, severity, rule, location, title, status="open"):
+              norm_loc = normalize_location(location)
+              path, line_no = split_path_line(norm_loc)
               findings.append({
                   "kind": kind or "",
                   "severity": severity or "",
                   "rule": rule or "",
-                  "location": location or "",
+                  "location": norm_loc,
+                  "path": path or "",
+                  "line": line_no if line_no else 0,
+                  "url": github_blob_link(path, line_no),
                   "title": (title or "")[:200],
                   "status": status or "",
               })
@@ -577,8 +612,11 @@ jobs:
               for item in top:
                   def esc(s):
                       return str(s or "").replace("|", "\\|").replace("\n", " ").strip()
+                  loc_cell = esc(item["location"])
+                  if item.get("url"):
+                      loc_cell = f'[{loc_cell}]({item["url"]})'
                   md_lines.append(
-                      f'| {esc(item["kind"])} | {esc(item["severity"])} | {esc(item["rule"])} | {esc(item["location"])} | {esc(item["title"])} | {esc(item["status"])} |')
+                      f'| {esc(item["kind"])} | {esc(item["severity"])} | {esc(item["rule"])} | {loc_cell} | {esc(item["title"])} | {esc(item["status"])} |')
 
           preview_md = "\n".join(md_lines) + "\n"
           preview_path = os.path.join(report_dir, "findings-top.md")

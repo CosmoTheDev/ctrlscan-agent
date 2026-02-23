@@ -2,13 +2,44 @@ const state = {
   view: "overview",
   status: null,
   jobs: [],
+  jobsTotal: 0,
+  jobsTotalPages: 1,
   selectedScanJobIds: {},
   jobSummary: null,
   selectedJobId: null,
   selectedJob: null,
   selectedJobScanners: [],
   selectedJobFindings: [],
+  selectedJobFindingsTotal: 0,
+  selectedJobFindingsTotalPages: 1,
+  selectedJobFindingsFacets: { kinds: [], scanners: [], severities: [] },
+  selectedJobFindingsSeverityTotals: null,
   selectedJobFixes: [],
+  selectedJobRemediationRuns: [],
+  selectedJobRemediationRunsTotal: 0,
+  selectedJobRemediationRunsPage: 1,
+  selectedJobRemediationRunsPageSize: 10,
+  selectedJobRemediationRunsTotalPages: 1,
+  scanDetailRemediationHistoryCollapsed: false,
+  scanDetailRemediationExpandedTaskIds: {},
+  pathIgnoreRules: [],
+  pathIgnoreRulesLoading: false,
+  remediationCampaigns: [],
+  remediationSelectedCampaignId: null,
+  remediationCampaignTasks: [],
+  remediationRepoSuggestions: [],
+  remediationRepoSuggestionsLoaded: false,
+  remediationRepoSuggestionsLoading: false,
+  remediationRepoFilter: "",
+  remediationDraft: {
+    name: "Offline fix run",
+    mode: "triage",
+    maxRepos: "10",
+    autoPR: false,
+    startNow: true,
+    selectedRepos: [],
+  },
+  agentWorkers: [],
   schedules: [],
   agent: null,
   config: null,
@@ -16,6 +47,12 @@ const state = {
   events: [],
   es: null,
   liveRefreshTimer: null,
+  liveRefreshPending: {
+    jobs: false,
+    detail: false,
+    workers: false,
+    remediation: false,
+  },
   triggerPlan: {
     targets: [],
     workers: "",
@@ -32,10 +69,23 @@ const state = {
     kind: "",
     scanner: "",
     severity: "",
+    title: "",
+    path: "",
+    q: "",
+  },
+  scanDetailFindingsDraft: {
+    title: "",
+    path: "",
+    q: "",
   },
   scansPage: 1,
   scansPageSize: 20,
   stopBusy: false,
+  scanDetailAiStopBusy: false,
+  scanDetailFixesPage: 1,
+  scanDetailFixesPageSize: 10,
+  scanDetailFixesSearch: "",
+  scanDetailFixesStatus: "",
   sweepUi: {
     skipEventCount: 0,
     latestSummary: null,
@@ -46,6 +96,7 @@ const views = [
   { id: "overview", title: "Overview", subtitle: "Gateway status, agent controls, and scan posture." },
   { id: "scans", title: "Scans", subtitle: "Runs, scanner results, findings, and raw downloads." },
   { id: "scan-detail", title: "Scan Detail", subtitle: "Expanded scan view with per-scanner output and findings.", hidden: true },
+  { id: "remediation", title: "Remediation", subtitle: "Offline AI fix/PR campaigns on existing findings and scan jobs." },
   { id: "cron", title: "Cron Jobs", subtitle: "Schedules that trigger discovery and scans." },
   { id: "agents", title: "Agent Runtime", subtitle: "One orchestrator with configurable scan workers." },
   { id: "config", title: "Config", subtitle: "Review and edit gateway config used during onboarding." },
@@ -58,6 +109,21 @@ const targetMeta = {
   cve_search: { label: "CVE Search", desc: "Public repository discovery via CVE/security-focused search queries." },
   all_accessible: { label: "All Accessible", desc: "All repos accessible with your token (owner/collab/org)." },
 };
+
+function getScannedRepoLabel(r) {
+  const owner = String(r?.owner || "").trim();
+  const repo = String(r?.repo || "").trim();
+  return owner && repo ? `${owner}/${repo}` : "";
+}
+
+function getRemediationRepoSuggestionsFiltered() {
+  const q = String(state.remediationRepoFilter || "").trim().toLowerCase();
+  const all = Array.isArray(state.remediationRepoSuggestions) ? state.remediationRepoSuggestions : [];
+  const selected = new Set((state.remediationDraft?.selectedRepos || []).map(v => String(v).toLowerCase()));
+  let items = all.filter(r => !selected.has(getScannedRepoLabel(r).toLowerCase()));
+  if (q) items = items.filter(r => getScannedRepoLabel(r).toLowerCase().includes(q));
+  return items.slice(0, 12);
+}
 
 function escapeHtml(v) {
   return String(v ?? "")
@@ -170,6 +236,7 @@ function viewToPath(id) {
   switch (id) {
     case "overview": return "/ui/overview";
     case "scans": return "/ui/scans";
+    case "remediation": return "/ui/remediation";
     case "cron": return "/ui/cronjobs";
     case "agents": return "/ui/agents";
     case "config": return "/ui/config";
@@ -210,6 +277,7 @@ async function applyRouteFromLocation() {
   const alias = {
     cronjobs: "cron",
     cron: "cron",
+    remediation: "remediation",
     agents: "agents",
     config: "config",
     events: "events",
@@ -250,14 +318,20 @@ function pushEvent(evt) {
     renderOverview();
     renderAgents();
     renderHealthPill();
-    scheduleLiveRefresh();
   }
-  if (["agent.triggered", "agent.stop_requested", "schedule.fired", "schedule.triggered", "fix.approved", "fix.rejected"].includes(evt.type)) {
-    scheduleLiveRefresh();
+  if (["agent.triggered", "agent.stop_requested", "schedule.fired", "schedule.triggered"].includes(evt.type)) {
+    scheduleLiveRefresh({ jobs: true, workers: true });
+  }
+  if (["fix.approved", "fix.rejected"].includes(evt.type)) {
+    scheduleLiveRefresh({ jobs: true, detail: true, workers: true });
+  }
+  if (["worker.status", "campaign.started", "campaign.completed", "campaign.task.started", "campaign.task.completed", "campaign.task.failed", "campaign.stopped"].includes(evt.type)) {
+    scheduleLiveRefresh({ workers: true, remediation: true, detail: true });
   }
   if (["sweep.started", "sweep.completed"].includes(evt.type)) {
     renderOverview();
     renderScans();
+    scheduleLiveRefresh({ jobs: true, workers: true, detail: true });
   }
   renderEvents();
 }
@@ -468,28 +542,58 @@ function renderScans() {
   const root = document.getElementById("view-scans");
   const rows = state.jobs || [];
   const pageSize = state.scansPageSize || 20;
-  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const totalRows = Number(state.jobsTotal || rows.length || 0);
+  const totalPages = Math.max(1, Number(state.jobsTotalPages || Math.ceil(totalRows / pageSize) || 1));
   const page = Math.min(Math.max(1, state.scansPage || 1), totalPages);
   state.scansPage = page;
   const pageStart = (page - 1) * pageSize;
-  const visibleRows = rows.slice(pageStart, pageStart + pageSize);
+  const visibleRows = rows;
   const selectedIds = state.selectedScanJobIds || {};
-  const selectedCount = rows.filter(j => selectedIds[j.id]).length;
+  const selectedCount = Object.keys(selectedIds).length;
   const visibleSelectedCount = visibleRows.filter(j => selectedIds[j.id]).length;
   const allVisibleSelected = visibleRows.length > 0 && visibleSelectedCount === visibleRows.length;
   const selectedJob = state.selectedJob;
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
+  const scanWorkers = (state.agentWorkers || []).filter((w) => String(w?.kind || "").toLowerCase() === "scan");
+  const activeScanWorkers = scanWorkers.filter((w) => {
+    const st = String(w?.status || "").toLowerCase();
+    return st === "running" || st === "failed";
+  });
   setHtml(root, `
     <div class="stack">
       ${renderSweepSummaryCard()}
+      <div class="card">
+        <div class="toolbar" style="justify-content:space-between">
+          <h3 style="margin:0">Active Scan Workers</h3>
+          <span class="muted">${activeScanWorkers.length} active • ${scanWorkers.length} total scan workers</span>
+        </div>
+        <div class="table-wrap" style="max-height:180px">
+          <table>
+            <thead><tr><th>Name</th><th>Status</th><th>Action</th><th>Repo</th><th>Job</th><th>Message</th><th>Updated</th></tr></thead>
+            <tbody>
+	              ${scanWorkers.length ? scanWorkers.map(w => `
+	                <tr>
+	                  <td>${escapeHtml(w.name || "")}</td>
+	                  <td><span class="${statusClass(w.status)}">${escapeHtml(w.status || "")}</span></td>
+                  <td>${escapeHtml(w.action || "")}</td>
+                  <td>${escapeHtml(w.repo || "")}</td>
+                  <td>${w.scan_job_id ? `#${w.scan_job_id}` : `<span class="muted">-</span>`}</td>
+                  <td class="muted">${escapeHtml(w.message || "")}</td>
+                  <td class="muted">${escapeHtml(fmtDate(w.updated_at))}</td>
+	                </tr>
+	              `).join("") : `<tr><td colspan="7" class="muted">No scan worker telemetry yet. Trigger a scan to populate live worker activity.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>
       <div class="split">
       <div class="card">
         <div class="toolbar">
           <button id="scansRefresh" class="btn btn-secondary">Refresh Jobs</button>
           <button id="scansDeleteSelected" class="btn btn-danger" ${selectedCount === 0 ? "disabled" : ""}>Delete Selected (${selectedCount})</button>
-          <button id="scansDeleteAll" class="btn btn-danger" ${rows.length === 0 ? "disabled" : ""}>Delete All</button>
-          <span class="muted">Page ${page} of ${totalPages} • Showing ${rows.length === 0 ? 0 : (pageStart + 1)}-${Math.min(pageStart + pageSize, rows.length)} of ${rows.length}</span>
+          <button id="scansDeleteAll" class="btn btn-danger" ${totalRows === 0 ? "disabled" : ""}>Delete All</button>
+          <span class="muted">Page ${page} of ${totalPages} • Showing ${totalRows === 0 ? 0 : (pageStart + 1)}-${Math.min(pageStart + pageSize, totalRows)} of ${totalRows}</span>
           <button id="scansPrevPage" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
           <button id="scansNextPage" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
         </div>
@@ -569,11 +673,11 @@ function renderScans() {
   root.querySelector("#scansRefresh")?.addEventListener("click", refreshJobs);
   root.querySelector("#scansPrevPage")?.addEventListener("click", () => {
     state.scansPage = Math.max(1, (state.scansPage || 1) - 1);
-    renderScans();
+    refreshJobs();
   });
   root.querySelector("#scansNextPage")?.addEventListener("click", () => {
     state.scansPage = (state.scansPage || 1) + 1;
-    renderScans();
+    refreshJobs();
   });
   root.querySelector("#scansDeleteSelected")?.addEventListener("click", deleteSelectedScanJobs);
   root.querySelector("#scansDeleteAll")?.addEventListener("click", deleteAllScanJobs);
@@ -616,6 +720,191 @@ function renderScans() {
   });
 }
 
+function renderRemediation() {
+  const root = document.getElementById("view-remediation");
+  if (!root) return;
+  const campaigns = state.remediationCampaigns || [];
+  const draft = state.remediationDraft || {};
+  let selected = campaigns.find(c => c.id === state.remediationSelectedCampaignId) || null;
+  if (!selected && campaigns.length > 0) {
+    selected = campaigns[0];
+    state.remediationSelectedCampaignId = selected.id;
+  }
+  const tasks = state.remediationCampaignTasks || [];
+  const repoSuggest = getRemediationRepoSuggestionsFiltered();
+  const selectedRepos = Array.isArray(draft.selectedRepos) ? draft.selectedRepos : [];
+  setHtml(root, `
+    <div class="stack">
+      <div class="split">
+        <div class="card">
+          <h3>Create Remediation Campaign</h3>
+          <div class="form-grid">
+            <label>Name<input id="remName" placeholder="Offline fix run" value="${escapeHtml(draft.name || "")}"></label>
+            <label>Mode
+              <select id="remMode">
+                <option value="triage" ${draft.mode === "triage" ? "selected" : ""}>triage</option>
+                <option value="semi" ${draft.mode === "semi" ? "selected" : ""}>semi</option>
+                <option value="auto" ${draft.mode === "auto" ? "selected" : ""}>auto</option>
+              </select>
+            </label>
+            <label>Max repos<input id="remMaxRepos" type="number" min="0" placeholder="10" value="${escapeHtml(draft.maxRepos ?? "")}"></label>
+          </div>
+          <div style="margin-top:10px">
+            <label>Scanned repos (optional, multi-select)</label>
+            <input id="remRepoSearch" placeholder="Type owner/repo to add from scanned repos…" value="${escapeHtml(state.remediationRepoFilter || "")}">
+            <div class="toolbar" style="margin-top:8px; flex-wrap:wrap" id="remRepoChips">
+              ${selectedRepos.map((repo) => `<span class="badge" style="display:inline-flex;align-items:center;gap:8px">${escapeHtml(repo)} <button class="btn btn-secondary" data-rem-chip-remove="${escapeHtml(repo)}" style="padding:2px 8px;min-height:auto">x</button></span>`).join("") || `<span class="muted">No repos selected. Leave empty to use latest scanned repos (subject to max repos).</span>`}
+            </div>
+            <div class="card" style="margin-top:8px; padding:8px 10px">
+              <div class="toolbar" style="justify-content:space-between">
+                <span class="muted">${state.remediationRepoSuggestionsLoading ? "Loading scanned repos…" : "Choose from previously scanned repos"}</span>
+                <button id="remRepoReload" class="btn btn-secondary">Reload</button>
+              </div>
+              <div class="table-wrap" style="max-height:180px; margin-top:8px">
+                <table>
+                  <thead><tr><th>Repo</th><th>Provider</th><th>Action</th></tr></thead>
+                  <tbody>
+                    ${repoSuggest.map((r) => `<tr>
+                      <td>${escapeHtml(getScannedRepoLabel(r))}</td>
+                      <td>${escapeHtml(r.provider || "")}</td>
+                      <td><button class="btn btn-secondary" data-rem-repo-add="${escapeHtml(getScannedRepoLabel(r))}">Add</button></td>
+                    </tr>`).join("") || `<tr><td colspan="3" class="muted">${state.remediationRepoSuggestionsLoaded ? "No matching scanned repos." : "Repo suggestions not loaded yet."}</td></tr>`}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="toolbar" style="margin-top:10px">
+            <label style="display:flex; align-items:center; gap:8px; width:auto"><input id="remAutoPR" type="checkbox" ${draft.autoPR ? "checked" : ""}> Auto trigger PR processing</label>
+            <label style="display:flex; align-items:center; gap:8px; width:auto"><input id="remStartNow" type="checkbox" ${draft.startNow !== false ? "checked" : ""}> Start immediately</label>
+          </div>
+          <div class="toolbar">
+            <button id="remCreate" class="btn btn-primary">Create Campaign</button>
+            <button id="remRefresh" class="btn btn-secondary">Refresh</button>
+          </div>
+          <div class="footer-note">Uses existing scan jobs/findings in the database. No rescan required.</div>
+        </div>
+        <div class="card">
+          <h3>Worker Activity</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Action</th><th>Repo</th><th>Updated</th></tr></thead>
+              <tbody>
+                ${(state.agentWorkers || []).map(w => `<tr>
+                  <td>${escapeHtml(w.name)}</td>
+                  <td>${escapeHtml(w.kind)}</td>
+                  <td><span class="${statusClass(w.status)}">${escapeHtml(w.status)}</span></td>
+                  <td>${escapeHtml(w.action || "")}</td>
+                  <td>${escapeHtml(w.repo || "")}</td>
+                  <td>${escapeHtml(fmtDate(w.updated_at))}</td>
+                </tr>`).join("") || `<tr><td colspan="6" class="muted">No worker status yet.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="card">
+          <h3>Campaigns</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Mode</th><th>Tasks</th><th>Actions</th></tr></thead>
+              <tbody>
+                ${campaigns.map(c => `<tr data-rem-campaign-id="${c.id}" style="cursor:pointer; ${selected && selected.id === c.id ? "background:rgba(79,140,255,.08)" : ""}">
+                  <td>#${c.id}</td>
+                  <td>${escapeHtml(c.name)}</td>
+                  <td><span class="${statusClass(c.status)}">${escapeHtml(c.status)}</span></td>
+                  <td>${escapeHtml(c.mode)}</td>
+                  <td>${c.completed_tasks}/${c.total_tasks} <span class="muted">(P:${c.pending_tasks} R:${c.running_tasks} F:${c.failed_tasks})</span></td>
+                  <td class="row-actions">
+                    <button class="btn btn-secondary" data-rem-start="${c.id}" ${c.status === "running" ? "disabled" : ""}>Start</button>
+                    <button class="btn btn-danger" data-rem-stop="${c.id}" ${["running","draft"].includes(String(c.status)) ? "" : "disabled"}>Stop</button>
+                  </td>
+                </tr>`).join("") || `<tr><td colspan="6" class="muted">No remediation campaigns yet.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Campaign Tasks ${selected ? `#${selected.id}` : ""}</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>ID</th><th>Repo</th><th>Scan Job</th><th>Status</th><th>Worker</th><th>Message</th></tr></thead>
+              <tbody>
+                ${tasks.map(t => `<tr>
+                  <td>#${t.id}</td>
+                  <td>${escapeHtml(t.owner)}/${escapeHtml(t.repo)}</td>
+                  <td>#${t.scan_job_id}</td>
+                  <td><span class="${statusClass(t.status)}">${escapeHtml(t.status)}</span></td>
+                  <td>${escapeHtml(t.worker_name || "")}</td>
+                  <td class="muted">${escapeHtml(t.error_msg || "")}</td>
+                </tr>`).join("") || `<tr><td colspan="6" class="muted">Select a campaign to inspect tasks.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  `);
+
+  root.querySelector("#remRefresh")?.addEventListener("click", refreshRemediation);
+  root.querySelector("#remCreate")?.addEventListener("click", createRemediationCampaign);
+  root.querySelector("#remRepoReload")?.addEventListener("click", async () => {
+    await refreshRemediationRepoSuggestions(true);
+  });
+  root.querySelector("#remName")?.addEventListener("input", (e) => { state.remediationDraft.name = e.target.value; });
+  root.querySelector("#remMode")?.addEventListener("change", (e) => { state.remediationDraft.mode = e.target.value; });
+  root.querySelector("#remMaxRepos")?.addEventListener("input", (e) => { state.remediationDraft.maxRepos = e.target.value; });
+  root.querySelector("#remAutoPR")?.addEventListener("change", (e) => { state.remediationDraft.autoPR = !!e.target.checked; });
+  root.querySelector("#remStartNow")?.addEventListener("change", (e) => { state.remediationDraft.startNow = !!e.target.checked; });
+  root.querySelector("#remRepoSearch")?.addEventListener("input", (e) => {
+    state.remediationRepoFilter = e.target.value;
+    renderRemediation();
+  });
+  root.querySelector("#remRepoSearch")?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const q = String(e.target.value || "").trim();
+    const exact = (state.remediationRepoSuggestions || []).find(r => getScannedRepoLabel(r).toLowerCase() === q.toLowerCase());
+    if (exact) {
+      const label = getScannedRepoLabel(exact);
+      if (!state.remediationDraft.selectedRepos.includes(label)) state.remediationDraft.selectedRepos.push(label);
+      state.remediationRepoFilter = "";
+      renderRemediation();
+    }
+  });
+  root.querySelectorAll("[data-rem-repo-add]").forEach((btn) => btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    const label = btn.dataset.remRepoAdd;
+    if (!label) return;
+    if (!state.remediationDraft.selectedRepos.includes(label)) state.remediationDraft.selectedRepos.push(label);
+    state.remediationRepoFilter = "";
+    renderRemediation();
+  }));
+  root.querySelectorAll("[data-rem-chip-remove]").forEach((btn) => btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    const label = btn.dataset.remChipRemove;
+    state.remediationDraft.selectedRepos = (state.remediationDraft.selectedRepos || []).filter(r => r !== label);
+    renderRemediation();
+  }));
+  root.querySelectorAll("[data-rem-campaign-id]").forEach((tr) => tr.addEventListener("click", async (e) => {
+    if (e.target.closest("button")) return;
+    state.remediationSelectedCampaignId = Number(tr.dataset.remCampaignId);
+    await refreshRemediationTasks(state.remediationSelectedCampaignId);
+    renderRemediation();
+  }));
+  root.querySelectorAll("[data-rem-start]").forEach((btn) => btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await startRemediationCampaign(Number(btn.dataset.remStart));
+  }));
+  root.querySelectorAll("[data-rem-stop]").forEach((btn) => btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await stopRemediationCampaign(Number(btn.dataset.remStop));
+  }));
+}
+
 function renderScanDetailPage() {
   const root = document.getElementById("view-scan-detail");
   const selectedJob = state.selectedJob;
@@ -625,34 +914,67 @@ function renderScanDetailPage() {
   }
   const scanners = state.selectedJobScanners || [];
   const findings = state.selectedJobFindings || [];
-  const filters = state.scanDetailFindingsFilters || { kind: "", scanner: "", severity: "" };
-  const filteredFindings = findings.filter((f) => {
-    if (filters.kind && String(f.kind || "") !== filters.kind) return false;
-    if (filters.scanner && String(f.scanner || "") !== filters.scanner) return false;
-    if (filters.severity && severityBucket(f.severity) !== filters.severity) return false;
-    return true;
-  });
+  const filters = state.scanDetailFindingsFilters || { kind: "", scanner: "", severity: "", title: "", path: "", q: "" };
+  const draft = state.scanDetailFindingsDraft || { title: "", path: "", q: "" };
   const derivedSeverity = countFindingsBySeverity(findings);
-  const hasFindings = findings.length > 0;
+  const hasFindings = (state.selectedJobFindingsTotal || 0) > 0 || findings.length > 0;
+  const serverSeverity = state.selectedJobFindingsSeverityTotals || null;
   const severityCards = {
-    critical: hasFindings ? derivedSeverity.critical : (selectedJob.findings_critical ?? 0),
-    high: hasFindings ? derivedSeverity.high : (selectedJob.findings_high ?? 0),
-    medium: hasFindings ? derivedSeverity.medium : (selectedJob.findings_medium ?? 0),
-    low: hasFindings ? derivedSeverity.low : (selectedJob.findings_low ?? 0),
+    critical: hasFindings ? (serverSeverity?.critical ?? derivedSeverity.critical) : (selectedJob.findings_critical ?? 0),
+    high: hasFindings ? (serverSeverity?.high ?? derivedSeverity.high) : (selectedJob.findings_high ?? 0),
+    medium: hasFindings ? (serverSeverity?.medium ?? derivedSeverity.medium) : (selectedJob.findings_medium ?? 0),
+    low: hasFindings ? (serverSeverity?.low ?? derivedSeverity.low) : (selectedJob.findings_low ?? 0),
   };
   const pageSize = state.scanDetailFindingsPageSize || 25;
-  const totalPages = Math.max(1, Math.ceil(filteredFindings.length / pageSize));
+  const totalPages = Math.max(1, Number(state.selectedJobFindingsTotalPages || 1));
   const page = Math.min(Math.max(1, state.scanDetailFindingsPage || 1), totalPages);
   state.scanDetailFindingsPage = page;
   const start = (page - 1) * pageSize;
-  const visibleFindings = filteredFindings.slice(start, start + pageSize);
-  const kindOptions = [...new Set(findings.map(f => String(f.kind || "").trim()).filter(Boolean))].sort();
-  const scannerOptions = [...new Set(findings.map(f => String(f.scanner || "").trim()).filter(Boolean))].sort();
-  const severityOptions = [...new Set(findings.map(f => severityBucket(f.severity)).filter(Boolean))]
-    .sort((a, b) => ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(a) - ["CRITICAL", "HIGH", "MEDIUM", "LOW"].indexOf(b));
+  const visibleFindings = findings;
+  const facets = state.selectedJobFindingsFacets || { kinds: [], scanners: [], severities: [] };
+  const kindOptions = Array.isArray(facets.kinds) ? facets.kinds : [];
+  const scannerOptions = Array.isArray(facets.scanners) ? facets.scanners : [];
+  const severityOptions = Array.isArray(facets.severities) ? facets.severities : [];
   const fixes = state.selectedJobFixes || [];
+  const fixSearch = String(state.scanDetailFixesSearch || "").trim().toLowerCase();
+  const fixStatusFilter = String(state.scanDetailFixesStatus || "").trim().toLowerCase();
+  const filteredFixes = fixes.filter((f) => {
+    const status = String(f.status || "").toLowerCase();
+    if (fixStatusFilter && status !== fixStatusFilter) return false;
+    if (!fixSearch) return true;
+    const hay = [
+      f.id,
+      f.finding_type,
+      f.status,
+      f.pr_title,
+      f.pr_url,
+      f.pr_body,
+    ].map(v => String(v || "")).join(" ").toLowerCase();
+    return hay.includes(fixSearch);
+  });
+  const fixPageSize = Math.max(1, Number(state.scanDetailFixesPageSize || 10));
+  const fixTotal = filteredFixes.length;
+  const fixTotalPages = Math.max(1, Math.ceil(fixTotal / fixPageSize));
+  const fixPage = Math.min(Math.max(1, Number(state.scanDetailFixesPage || 1)), fixTotalPages);
+  state.scanDetailFixesPage = fixPage;
+  const fixStart = (fixPage - 1) * fixPageSize;
+  const visibleFixes = filteredFixes.slice(fixStart, fixStart + fixPageSize);
+  const fixStatusOptions = [...new Set(fixes.map(f => String(f.status || "").trim()).filter(Boolean))].sort();
+  const remediationRuns = state.selectedJobRemediationRuns || [];
+  const remediationRunsTotal = Number(state.selectedJobRemediationRunsTotal || remediationRuns.length || 0);
+  const remediationRunsPage = Number(state.selectedJobRemediationRunsPage || 1);
+  const remediationRunsTotalPages = Math.max(1, Number(state.selectedJobRemediationRunsTotalPages || 1));
+  const remediationHistoryCollapsed = !!state.scanDetailRemediationHistoryCollapsed;
+  const remediationExpanded = state.scanDetailRemediationExpandedTaskIds || {};
   const aiEnabled = !!state.agent?.ai_enabled;
   const mode = state.agent?.mode || "triage";
+  const pathIgnoreRules = state.pathIgnoreRules || [];
+  const activeRemediationWorker = (state.agentWorkers || []).find((w) =>
+    w && w.kind === "remediation" &&
+    Number(w.scan_job_id || 0) === Number(selectedJob.id) &&
+    ["running"].includes(String(w.status || "").toLowerCase())
+  );
+  const remediationForScanRunning = !!activeRemediationWorker;
   setHtml(root, `
     <div class="scan-detail-layout">
       <div class="card">
@@ -713,7 +1035,13 @@ function renderScanDetailPage() {
               ${severityOptions.map(v => `<option value="${escapeHtml(v)}" ${filters.severity === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
             </select>
           </label>
-          <span class="muted">Showing ${filteredFindings.length === 0 ? 0 : (start + 1)}-${Math.min(start + pageSize, filteredFindings.length)} of ${filteredFindings.length}${filteredFindings.length !== findings.length ? ` (filtered from ${findings.length})` : ` of ${findings.length}`}</span>
+          <input id="detailFindingsTitleFilter" placeholder="Title contains…" value="${escapeHtml(draft.title || "")}" style="max-width:220px">
+          <input id="detailFindingsPathFilter" placeholder="Path contains…" value="${escapeHtml(draft.path || "")}" style="max-width:220px">
+          <input id="detailFindingsSearch" placeholder="Search findings…" value="${escapeHtml(draft.q || "")}" style="min-width:240px">
+          <button id="detailFindingsSearchApply" class="btn btn-secondary">Search</button>
+          <button id="detailFindingsSearchClear" class="btn btn-secondary">Clear</button>
+          <button id="detailPathIgnores" class="btn btn-secondary">Path Ignores (${pathIgnoreRules.length})</button>
+          <span class="muted">Showing ${(state.selectedJobFindingsTotal || 0) === 0 ? 0 : (start + 1)}-${Math.min(start + pageSize, Number(state.selectedJobFindingsTotal || 0))} of ${Number(state.selectedJobFindingsTotal || 0)}</span>
           <button id="detailFindingsPrev" class="btn btn-secondary" ${page <= 1 ? "disabled" : ""}>Prev</button>
           <button id="detailFindingsNext" class="btn btn-secondary" ${page >= totalPages ? "disabled" : ""}>Next</button>
         </div>
@@ -741,26 +1069,100 @@ function renderScanDetailPage() {
           <div class="muted">AI provider is not configured. Add an OpenAI key (or another provider) in Config to enable triage, patches, and PR actions.</div>
         ` : `
           <div class="footer-note">Mode: ${escapeHtml(mode)}. In triage mode, use "Approve + Create PR" for one-click PR creation.</div>
-          <div class="table-wrap" style="margin-top:10px">
+          <div class="toolbar" style="margin-top:10px">
+            <button id="detailLaunchReviewCampaign" class="btn btn-primary ${remediationForScanRunning ? "is-loading" : ""}" ${remediationForScanRunning ? "disabled" : ""}>${remediationForScanRunning ? "AI Reviewing…" : "Launch AI Review Campaign For This Scan"}</button>
+            <button id="detailStopReviewCampaign" class="btn btn-danger ${state.scanDetailAiStopBusy ? "is-loading" : ""}" ${(remediationForScanRunning && !state.scanDetailAiStopBusy) ? "" : (state.scanDetailAiStopBusy ? "disabled" : "disabled")}>${state.scanDetailAiStopBusy ? "Stopping" : "Stop AI Review"}</button>
+            <span class="muted">Creates an offline remediation campaign pinned to this scan job so AI triage can populate fix reviews without rescanning.</span>
+          </div>
+          ${remediationForScanRunning ? `
+            <div class="ai-runtime-banner">
+              <span class="spinner-dot" aria-hidden="true"></span>
+              <div>
+                <strong>AI remediation agent is working on this scan.</strong>
+                <div class="muted">Worker: ${escapeHtml(activeRemediationWorker.name || "remediation")} • ${escapeHtml(activeRemediationWorker.action || "triaging findings")}</div>
+              </div>
+            </div>
+          ` : ``}
+          <div class="card" style="margin-top:10px; padding:10px 12px">
+            <div class="toolbar" style="justify-content:space-between">
+              <div class="kicker" style="margin:0">AI Remediation Campaign History (This Scan)</div>
+              <div class="row-actions">
+                <span class="muted">Page ${remediationRunsPage} of ${remediationRunsTotalPages} • ${remediationRunsTotal} total</span>
+                <button id="detailRemHistoryPrev" class="btn btn-secondary" ${remediationRunsPage <= 1 ? "disabled" : ""}>Prev</button>
+                <button id="detailRemHistoryNext" class="btn btn-secondary" ${remediationRunsPage >= remediationRunsTotalPages ? "disabled" : ""}>Next</button>
+                <button id="detailRemHistoryToggle" class="btn btn-secondary">${remediationHistoryCollapsed ? "Expand" : "Collapse"}</button>
+              </div>
+            </div>
+            <div class="table-wrap remediation-history-wrap ${remediationHistoryCollapsed ? "hidden" : ""}">
+              <table>
+                <thead><tr><th>Campaign</th><th>Task</th><th>Status</th><th>AI Outcome</th><th>Started</th><th>Completed</th><th>Message</th><th>Details</th></tr></thead>
+                <tbody>
+                  ${remediationRuns.map(r => `<tr>
+                    <td>#${r.campaign_id} <span class="muted">${escapeHtml(r.campaign_name || "")}</span></td>
+                    <td>#${r.task_id}</td>
+                    <td>
+                      <div><span class="${statusClass(r.task_status)}">${escapeHtml(r.task_status || "")}</span></div>
+                      <div class="muted">Campaign: ${escapeHtml(r.campaign_status || "")} (${escapeHtml(r.campaign_mode || "")})</div>
+                    </td>
+                    <td>
+                      <div>${escapeHtml(r.ai_triage_status || "-")}</div>
+                      <div class="muted">findings ${Number(r.ai_findings_loaded || 0)} → ${Number(r.ai_findings_deduped || 0)} • batches ${Number(r.ai_triage_batches || 0)}</div>
+                      <div class="muted">queued ${Number(r.ai_fix_queued || 0)} / attempted ${Number(r.ai_fix_attempted || 0)} • low-conf ${Number(r.ai_fix_skipped_low_conf || 0)} • failed ${Number(r.ai_fix_failed || 0)}</div>
+                    </td>
+                    <td>${escapeHtml(fmtDate(r.started_at || r.campaign_started_at || r.created_at))}</td>
+                    <td>${escapeHtml(fmtDate(r.completed_at || r.campaign_completed_at || ""))}</td>
+                    <td class="muted">${escapeHtml(r.task_message || r.campaign_error || "")}</td>
+                    <td><button class="btn btn-secondary" data-rem-task-toggle="${r.task_id}">${remediationExpanded[r.task_id] ? "Hide" : "Show"}</button></td>
+                  </tr>
+                  ${remediationExpanded[r.task_id] ? `<tr>
+                    <td colspan="8">
+                      <div class="remediation-outcome-detail">
+                        <div class="muted"><strong>AI updated:</strong> ${escapeHtml(fmtDate(r.ai_updated_at || ""))}</div>
+                        <div class="muted" style="margin-top:6px"><strong>Triage summary</strong></div>
+                        <pre class="code remediation-summary-pre">${escapeHtml(r.ai_triage_summary || "No triage summary saved.")}</pre>
+                      </div>
+                    </td>
+                  </tr>` : ""}`).join("") || `<tr><td colspan="8" class="muted">No AI remediation campaigns have run for this scan yet.</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+            <div class="footer-note">This history shows offline AI review campaign runs for this scan even when no fixes were queued (for example, if all fixes were skipped as low confidence).</div>
+          </div>
+          <div class="card" style="margin-top:10px; padding:10px 12px">
+            <div class="toolbar">
+              <input id="detailFixesSearch" placeholder="Search fixes / PR title / status..." value="${escapeHtml(state.scanDetailFixesSearch || "")}" style="min-width:260px">
+              <label style="width:auto">
+                <select id="detailFixesStatusFilter">
+                  <option value="">All statuses</option>
+                  ${fixStatusOptions.map(v => `<option value="${escapeHtml(v)}" ${String(state.scanDetailFixesStatus||"") === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+                </select>
+              </label>
+              <button id="detailFixesSearchClear" class="btn btn-secondary">Clear</button>
+              <span class="muted">Showing ${fixTotal === 0 ? 0 : (fixStart + 1)}-${Math.min(fixStart + fixPageSize, fixTotal)} of ${fixTotal}</span>
+              <button id="detailFixesPrev" class="btn btn-secondary" ${fixPage <= 1 ? "disabled" : ""}>Prev</button>
+              <button id="detailFixesNext" class="btn btn-secondary" ${fixPage >= fixTotalPages ? "disabled" : ""}>Next</button>
+            </div>
+            <div class="table-wrap">
             <table>
               <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>PR Title</th><th>PR</th><th>Actions</th></tr></thead>
               <tbody>
-                ${fixes.map(f => `<tr>
+                ${visibleFixes.map(f => `<tr>
                   <td>#${f.id}</td>
                   <td>${escapeHtml(f.finding_type)}</td>
                   <td><span class="${statusClass(f.status)}">${escapeHtml(f.status)}</span></td>
                   <td>${escapeHtml(f.pr_title || "")}</td>
                   <td>${f.pr_url ? `<a class="link" target="_blank" rel="noreferrer" href="${escapeHtml(f.pr_url)}">Open PR</a>` : `<span class="muted">n/a</span>`}</td>
                   <td class="row-actions">
-                    ${f.status === "pending" ? `
-                      <button class="btn btn-secondary" data-fix-action="approve" data-fix-id="${f.id}">Approve</button>
-                      <button class="btn btn-primary" data-fix-action="approve-run" data-fix-id="${f.id}">Approve + Create PR</button>
-                      <button class="btn btn-danger" data-fix-action="reject" data-fix-id="${f.id}">Reject</button>
+                    ${["pending", "approved", "pr_failed"].includes(String(f.status || "").toLowerCase()) ? `
+                      ${String(f.status || "").toLowerCase() === "pending" ? `<button class="btn btn-secondary" data-fix-action="approve" data-fix-id="${f.id}">Approve</button>` : ``}
+                      <button class="btn btn-primary" data-fix-action="approve-run" data-fix-id="${f.id}">${String(f.status || "").toLowerCase() === "pr_failed" ? "Retry Create PR" : (String(f.status || "").toLowerCase() === "approved" ? "Create PR" : "Approve + Create PR")}</button>
+                      ${String(f.status || "").toLowerCase() !== "pr_open" ? `<button class="btn btn-danger" data-fix-action="reject" data-fix-id="${f.id}">Reject</button>` : ``}
                     ` : `<span class="muted">-</span>`}
                   </td>
                 </tr>`).join("") || `<tr><td colspan="6" class="muted">No AI-generated fixes queued for this scan yet.</td></tr>`}
               </tbody>
             </table>
+          </div>
           </div>
         `}
       </div>
@@ -768,32 +1170,92 @@ function renderScanDetailPage() {
   `);
   root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
-    if (state.selectedJobId) await selectJob(state.selectedJobId);
+    if (state.selectedJobId) await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
     renderScanDetailPage();
   });
-  root.querySelector("#detailFindingsKindFilter")?.addEventListener("change", (e) => {
+  root.querySelector("#detailFindingsKindFilter")?.addEventListener("change", async (e) => {
     state.scanDetailFindingsFilters.kind = e.target.value;
     state.scanDetailFindingsPage = 1;
+    await loadSelectedJobFindings();
     renderScanDetailPage();
   });
-  root.querySelector("#detailFindingsScannerFilter")?.addEventListener("change", (e) => {
+  root.querySelector("#detailFindingsScannerFilter")?.addEventListener("change", async (e) => {
     state.scanDetailFindingsFilters.scanner = e.target.value;
     state.scanDetailFindingsPage = 1;
+    await loadSelectedJobFindings();
     renderScanDetailPage();
   });
-  root.querySelector("#detailFindingsSeverityFilter")?.addEventListener("change", (e) => {
+  root.querySelector("#detailFindingsSeverityFilter")?.addEventListener("change", async (e) => {
     state.scanDetailFindingsFilters.severity = e.target.value;
     state.scanDetailFindingsPage = 1;
+    await loadSelectedJobFindings();
     renderScanDetailPage();
   });
-  root.querySelector("#detailFindingsPrev")?.addEventListener("click", () => {
+  root.querySelector("#detailFindingsTitleFilter")?.addEventListener("input", (e) => {
+    state.scanDetailFindingsDraft.title = e.target.value || "";
+  });
+  root.querySelector("#detailFindingsPathFilter")?.addEventListener("input", (e) => {
+    state.scanDetailFindingsDraft.path = e.target.value || "";
+  });
+  root.querySelector("#detailFindingsSearch")?.addEventListener("input", (e) => {
+    state.scanDetailFindingsDraft.q = e.target.value || "";
+  });
+  root.querySelector("#detailFindingsSearchApply")?.addEventListener("click", async () => {
+    state.scanDetailFindingsFilters.title = state.scanDetailFindingsDraft.title || "";
+    state.scanDetailFindingsFilters.path = state.scanDetailFindingsDraft.path || "";
+    state.scanDetailFindingsFilters.q = state.scanDetailFindingsDraft.q || "";
+    state.scanDetailFindingsPage = 1;
+    await loadSelectedJobFindings();
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFindingsSearchClear")?.addEventListener("click", async () => {
+    state.scanDetailFindingsDraft.title = "";
+    state.scanDetailFindingsDraft.path = "";
+    state.scanDetailFindingsDraft.q = "";
+    state.scanDetailFindingsFilters.title = "";
+    state.scanDetailFindingsFilters.path = "";
+    state.scanDetailFindingsFilters.q = "";
+    state.scanDetailFindingsPage = 1;
+    await loadSelectedJobFindings();
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailPathIgnores")?.addEventListener("click", openPathIgnoreModal);
+  ["#detailFindingsTitleFilter", "#detailFindingsPathFilter", "#detailFindingsSearch"].forEach((sel) => {
+    root.querySelector(sel)?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      root.querySelector("#detailFindingsSearchApply")?.click();
+    });
+  });
+  root.querySelector("#detailFindingsPrev")?.addEventListener("click", async () => {
     state.scanDetailFindingsPage = Math.max(1, (state.scanDetailFindingsPage || 1) - 1);
+    await loadSelectedJobFindings();
     renderScanDetailPage();
   });
-  root.querySelector("#detailFindingsNext")?.addEventListener("click", () => {
+  root.querySelector("#detailFindingsNext")?.addEventListener("click", async () => {
     state.scanDetailFindingsPage = (state.scanDetailFindingsPage || 1) + 1;
+    await loadSelectedJobFindings();
     renderScanDetailPage();
   });
+  root.querySelector("#detailRemHistoryToggle")?.addEventListener("click", () => {
+    state.scanDetailRemediationHistoryCollapsed = !state.scanDetailRemediationHistoryCollapsed;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailRemHistoryPrev")?.addEventListener("click", async () => {
+    state.selectedJobRemediationRunsPage = Math.max(1, (state.selectedJobRemediationRunsPage || 1) - 1);
+    await loadSelectedJobRemediationRuns();
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailRemHistoryNext")?.addEventListener("click", async () => {
+    state.selectedJobRemediationRunsPage = Math.min(Math.max(1, Number(state.selectedJobRemediationRunsTotalPages || 1)), (state.selectedJobRemediationRunsPage || 1) + 1);
+    await loadSelectedJobRemediationRuns();
+    renderScanDetailPage();
+  });
+  root.querySelectorAll("[data-rem-task-toggle]").forEach((btn) => btn.addEventListener("click", () => {
+    const id = Number(btn.dataset.remTaskToggle);
+    state.scanDetailRemediationExpandedTaskIds[id] = !state.scanDetailRemediationExpandedTaskIds[id];
+    renderScanDetailPage();
+  }));
   root.querySelectorAll("[data-fix-action]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = Number(btn.dataset.fixId);
@@ -801,6 +1263,32 @@ function renderScanDetailPage() {
       await handleFixAction(id, action);
     });
   });
+  root.querySelector("#detailFixesSearch")?.addEventListener("input", (e) => {
+    state.scanDetailFixesSearch = e.target.value || "";
+    state.scanDetailFixesPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFixesStatusFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFixesStatus = e.target.value || "";
+    state.scanDetailFixesPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFixesSearchClear")?.addEventListener("click", () => {
+    state.scanDetailFixesSearch = "";
+    state.scanDetailFixesStatus = "";
+    state.scanDetailFixesPage = 1;
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFixesPrev")?.addEventListener("click", () => {
+    state.scanDetailFixesPage = Math.max(1, (state.scanDetailFixesPage || 1) - 1);
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailFixesNext")?.addEventListener("click", () => {
+    state.scanDetailFixesPage = Math.min(fixTotalPages, (state.scanDetailFixesPage || 1) + 1);
+    renderScanDetailPage();
+  });
+  root.querySelector("#detailLaunchReviewCampaign")?.addEventListener("click", launchReviewCampaignForSelectedScan);
+  root.querySelector("#detailStopReviewCampaign")?.addEventListener("click", stopReviewCampaignForSelectedScan);
 }
 
 function renderCron() {
@@ -852,6 +1340,7 @@ function renderAgents() {
   const root = document.getElementById("view-agents");
   const st = state.status || {};
   const agent = state.agent || {};
+  const workers = [...(state.agentWorkers || [])].sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
   setHtml(root, `
     <div class="grid cols-3">
       <div class="card"><div class="metric-label">Runtime</div><div class="metric-value ${st.paused ? "warn" : "ok"}">${st.paused ? "Paused" : (st.running ? "Running" : "Idle")}</div></div>
@@ -876,6 +1365,27 @@ function renderAgents() {
           <button id="workersSave" class="btn btn-primary">Save Workers</button>
         </div>
         <div class="footer-note">Applies to future sweeps and persists to config.</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>Background Worker Activity</h3>
+      <div class="footer-note">Shows current PR and remediation worker actions in the orchestrator. Scan workers are represented by scan jobs/sweep status above.</div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead><tr><th>Name</th><th>Kind</th><th>Status</th><th>Action</th><th>Repo</th><th>Campaign</th><th>Task</th><th>Updated</th></tr></thead>
+          <tbody>
+            ${workers.map(w => `<tr>
+              <td>${escapeHtml(w.name)}</td>
+              <td>${escapeHtml(w.kind)}</td>
+              <td><span class="${statusClass(w.status)}">${escapeHtml(w.status)}</span></td>
+              <td>${escapeHtml(w.action || "")}</td>
+              <td>${escapeHtml(w.repo || "")}</td>
+              <td>${w.campaign_id ? `#${w.campaign_id}` : `<span class="muted">-</span>`}</td>
+              <td>${w.task_id ? `#${w.task_id}` : `<span class="muted">-</span>`}</td>
+              <td>${escapeHtml(fmtDate(w.updated_at))}</td>
+            </tr>`).join("") || `<tr><td colspan="8" class="muted">No background worker activity yet.</td></tr>`}
+          </tbody>
+        </table>
       </div>
     </div>
   `);
@@ -1038,9 +1548,20 @@ async function refreshStatus() {
 }
 
 async function refreshJobs() {
-  state.jobs = await api("/api/jobs");
+  const jobsRes = await api(`/api/jobs?page=${state.scansPage || 1}&page_size=${state.scansPageSize || 20}`);
+  if (jobsRes && Array.isArray(jobsRes.items)) {
+    state.jobs = jobsRes.items;
+    state.jobsTotal = Number(jobsRes.total || 0);
+    state.jobsTotalPages = Number(jobsRes.total_pages || 1);
+    state.scansPage = Number(jobsRes.page || state.scansPage || 1);
+    state.scansPageSize = Number(jobsRes.page_size || state.scansPageSize || 20);
+  } else {
+    state.jobs = Array.isArray(jobsRes) ? jobsRes : [];
+    state.jobsTotal = state.jobs.length;
+    state.jobsTotalPages = Math.max(1, Math.ceil(state.jobs.length / (state.scansPageSize || 20)));
+  }
   state.jobSummary = await api("/api/jobs/summary");
-  const totalPages = Math.max(1, Math.ceil((state.jobs || []).length / (state.scansPageSize || 20)));
+  const totalPages = Math.max(1, Number(state.jobsTotalPages || 1));
   if ((state.scansPage || 1) > totalPages) state.scansPage = totalPages;
   reconcileSelectedJobs();
   if (state.selectedJobId && !state.jobs.some(j => j.id === state.selectedJobId)) {
@@ -1050,14 +1571,86 @@ async function refreshJobs() {
   renderOverview();
 }
 
-async function selectJob(id) {
+async function loadSelectedJobFindings() {
+  if (!state.selectedJobId) return;
+  const params = new URLSearchParams();
+  params.set("status", "open");
+  params.set("page", String(state.scanDetailFindingsPage || 1));
+  params.set("page_size", String(state.scanDetailFindingsPageSize || 25));
+  const filters = state.scanDetailFindingsFilters || {};
+  if (filters.kind) params.set("kind", filters.kind);
+  if (filters.scanner) params.set("scanner", filters.scanner);
+  if (filters.severity) params.set("severity", filters.severity);
+  if (filters.title) params.set("title", filters.title);
+  if (filters.path) params.set("path", filters.path);
+  if (filters.q) params.set("q", filters.q);
+  const res = await api(`/api/jobs/${state.selectedJobId}/findings?${params.toString()}`);
+  if (res && Array.isArray(res.items)) {
+    state.selectedJobFindings = res.items;
+    state.selectedJobFindingsTotal = Number(res.total || 0);
+    state.selectedJobFindingsTotalPages = Number(res.total_pages || 1);
+    state.scanDetailFindingsPage = Number(res.page || state.scanDetailFindingsPage || 1);
+    state.scanDetailFindingsPageSize = Number(res.page_size || state.scanDetailFindingsPageSize || 25);
+    state.selectedJobFindingsFacets = res.facets || { kinds: [], scanners: [], severities: [] };
+    state.selectedJobFindingsSeverityTotals = res.severity_totals || null;
+  } else {
+    state.selectedJobFindings = Array.isArray(res) ? res : [];
+    state.selectedJobFindingsTotal = state.selectedJobFindings.length;
+    state.selectedJobFindingsTotalPages = 1;
+    state.selectedJobFindingsFacets = {
+      kinds: [...new Set(state.selectedJobFindings.map(f => String(f.kind || "")).filter(Boolean))].sort(),
+      scanners: [...new Set(state.selectedJobFindings.map(f => String(f.scanner || "")).filter(Boolean))].sort(),
+      severities: [...new Set(state.selectedJobFindings.map(f => severityBucket(f.severity)).filter(Boolean))],
+    };
+    state.selectedJobFindingsSeverityTotals = null;
+  }
+}
+
+async function loadSelectedJobRemediationRuns() {
+  if (!state.selectedJobId) return;
+  try {
+    const page = Number(state.selectedJobRemediationRunsPage || 1);
+    const pageSize = Number(state.selectedJobRemediationRunsPageSize || 10);
+    const res = await api(`/api/jobs/${state.selectedJobId}/remediation?page=${page}&page_size=${pageSize}`);
+    if (res && Array.isArray(res.items)) {
+      state.selectedJobRemediationRuns = res.items;
+      state.selectedJobRemediationRunsTotal = Number(res.total || 0);
+      state.selectedJobRemediationRunsPage = Number(res.page || page);
+      state.selectedJobRemediationRunsPageSize = Number(res.page_size || pageSize);
+      state.selectedJobRemediationRunsTotalPages = Number(res.total_pages || 1);
+    } else {
+      state.selectedJobRemediationRuns = Array.isArray(res) ? res : [];
+      state.selectedJobRemediationRunsTotal = state.selectedJobRemediationRuns.length;
+      state.selectedJobRemediationRunsTotalPages = 1;
+    }
+  } catch (_) {
+    state.selectedJobRemediationRuns = [];
+    state.selectedJobRemediationRunsTotal = 0;
+    state.selectedJobRemediationRunsTotalPages = 1;
+  }
+}
+
+async function selectJob(id, opts = {}) {
   state.selectedJobId = id;
-  state.scanDetailFindingsPage = 1;
-  state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "" };
+  if (!opts.preserveFindingsState) {
+    state.scanDetailFindingsPage = 1;
+    state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "", title: "", path: "", q: "" };
+    state.scanDetailFindingsDraft = { title: "", path: "", q: "" };
+  }
+  if (!opts.preserveFixesState) {
+    state.scanDetailFixesPage = 1;
+    state.scanDetailFixesSearch = "";
+    state.scanDetailFixesStatus = "";
+  }
+  if (!opts.preserveRemediationState) {
+    state.selectedJobRemediationRunsPage = 1;
+    state.scanDetailRemediationExpandedTaskIds = {};
+  }
   state.selectedJob = await api(`/api/jobs/${id}`);
   state.selectedJobScanners = await api(`/api/jobs/${id}/scanners`);
-  state.selectedJobFindings = await api(`/api/jobs/${id}/findings?status=open`);
+  await loadSelectedJobFindings();
   state.selectedJobFixes = await api(`/api/jobs/${id}/fixes`);
+  await loadSelectedJobRemediationRuns();
   renderScans();
   if (state.view === "scan-detail") renderScanDetailPage();
 }
@@ -1067,9 +1660,22 @@ function clearSelectedJob() {
   state.selectedJob = null;
   state.selectedJobScanners = [];
   state.selectedJobFindings = [];
+  state.selectedJobFindingsTotal = 0;
+  state.selectedJobFindingsTotalPages = 1;
+  state.selectedJobFindingsFacets = { kinds: [], scanners: [], severities: [] };
+  state.selectedJobFindingsSeverityTotals = null;
   state.selectedJobFixes = [];
+  state.scanDetailFixesPage = 1;
+  state.scanDetailFixesSearch = "";
+  state.scanDetailFixesStatus = "";
+  state.selectedJobRemediationRuns = [];
+  state.selectedJobRemediationRunsTotal = 0;
+  state.selectedJobRemediationRunsPage = 1;
+  state.selectedJobRemediationRunsTotalPages = 1;
+  state.scanDetailRemediationExpandedTaskIds = {};
   state.scanDetailFindingsPage = 1;
-  state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "" };
+  state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "", title: "", path: "", q: "" };
+  state.scanDetailFindingsDraft = { title: "", path: "", q: "" };
 }
 
 function reconcileSelectedJobs() {
@@ -1150,9 +1756,89 @@ async function deleteAllScanJobs() {
 }
 
 async function openScanDetailPage(id, opts = {}) {
-  await selectJob(id);
+  await selectJob(id, { preserveFindingsState: false });
   setView("scan-detail", { pushHistory: opts.pushHistory !== false });
   renderScanDetailPage();
+}
+
+async function launchReviewCampaignForSelectedScan() {
+  const job = state.selectedJob;
+  if (!job) return;
+  if (!state.agent?.ai_enabled) {
+    showNotice("AI Not Enabled", "Configure an AI provider in Config before launching an AI review campaign.");
+    return;
+  }
+  let res = null;
+  try {
+    res = await api("/api/remediation/campaigns", {
+      method: "POST",
+      body: JSON.stringify({
+        name: `Scan #${job.id} Review · ${job.owner}/${job.repo}`,
+        mode: state.agent?.mode || "triage",
+        auto_pr: false,
+        start_now: true,
+        latest_only: false,
+        scan_job_ids: [job.id],
+        max_repos: 1,
+      }),
+    });
+    showToast({
+      title: "AI Review Campaign Started",
+      message: `Campaign${res?.id ? ` #${res.id}` : ""} created for scan #${job.id}. Fix reviews will populate as triage runs.`,
+      kind: "success",
+      timeoutMs: 4200,
+    });
+  } catch (err) {
+    showNotice("Launch Review Campaign Failed", err.message);
+    return;
+  }
+
+  // The campaign has already been created at this point. Follow-up UI refreshes
+  // should not cause a false "launch failed" modal.
+  try {
+    await Promise.all([refreshRemediation(), refreshAgentWorkers()]);
+    if (state.selectedJobId === job.id) {
+      setTimeout(async () => {
+        try {
+          await selectJob(job.id, { preserveFindingsState: true, preserveRemediationState: true });
+        } catch (_) {}
+      }, 1500);
+    }
+  } catch (err) {
+    showToast({
+      title: "Campaign Started (Refresh Issue)",
+      message: `Review campaign${res?.id ? ` #${res.id}` : ""} started, but the UI failed to refresh automatically: ${err.message}`,
+      kind: "warn",
+      timeoutMs: 5200,
+    });
+  }
+}
+
+async function stopReviewCampaignForSelectedScan() {
+  const job = state.selectedJob;
+  if (!job || state.scanDetailAiStopBusy) return;
+  state.scanDetailAiStopBusy = true;
+  renderScanDetailPage();
+  try {
+    const res = await api(`/api/jobs/${job.id}/remediation/stop`, { method: "POST", body: "{}" });
+    const n = Number(res?.stopped_count || 0);
+    if (n > 0) {
+      showToast({
+        title: "AI Review Stopped",
+        message: `Stopped ${n} remediation campaign${n === 1 ? "" : "s"} for scan #${job.id}.`,
+        kind: "warn",
+        timeoutMs: 3200,
+      });
+    } else {
+      showNotice("Nothing To Stop", "No running remediation campaign was found for this scan.");
+    }
+    await Promise.all([refreshRemediation(), refreshAgentWorkers()]);
+  } catch (err) {
+    showNotice("Stop AI Review Failed", err.message);
+  } finally {
+    state.scanDetailAiStopBusy = false;
+    if (state.view === "scan-detail") renderScanDetailPage();
+  }
 }
 
 async function refreshCron() {
@@ -1165,6 +1851,190 @@ async function refreshAgent() {
   renderAgents();
 }
 
+async function refreshAgentWorkers() {
+  state.agentWorkers = await api("/api/agent/workers");
+  renderAgents();
+  if (state.view === "scans") renderScans();
+  if (state.view === "scan-detail") renderScanDetailPage();
+  if (state.view === "remediation") renderRemediation();
+}
+
+async function refreshPathIgnoreRules() {
+  state.pathIgnoreRulesLoading = true;
+  renderPathIgnoreModal();
+  try {
+    state.pathIgnoreRules = await api("/api/findings/path-ignores");
+    if (!Array.isArray(state.pathIgnoreRules)) state.pathIgnoreRules = [];
+  } catch (err) {
+    showNotice("Path Ignore Rules Failed", err.message);
+  } finally {
+    state.pathIgnoreRulesLoading = false;
+    renderPathIgnoreModal();
+    if (state.view === "scan-detail") renderScanDetailPage();
+  }
+}
+
+async function createPathIgnoreRule(payload) {
+  try {
+    await api("/api/findings/path-ignores", { method: "POST", body: JSON.stringify(payload || {}) });
+    await refreshPathIgnoreRules();
+    if (state.selectedJobId) {
+      await loadSelectedJobFindings();
+      renderScanDetailPage();
+    }
+    showToast({ title: "Path Ignore Added", message: "Findings were reloaded with the new ignore rule applied.", kind: "success", timeoutMs: 2600 });
+  } catch (err) {
+    showNotice("Add Ignore Rule Failed", err.message);
+  }
+}
+
+async function updatePathIgnoreRule(id, payload) {
+  try {
+    await api(`/api/findings/path-ignores/${id}`, { method: "PUT", body: JSON.stringify(payload || {}) });
+    await refreshPathIgnoreRules();
+    if (state.selectedJobId) {
+      await loadSelectedJobFindings();
+      renderScanDetailPage();
+    }
+  } catch (err) {
+    showNotice("Update Ignore Rule Failed", err.message);
+  }
+}
+
+async function deletePathIgnoreRule(id) {
+  try {
+    await fetch(`/api/findings/path-ignores/${id}`, { method: "DELETE" });
+    await refreshPathIgnoreRules();
+    if (state.selectedJobId) {
+      await loadSelectedJobFindings();
+      renderScanDetailPage();
+    }
+    showToast({ title: "Path Ignore Deleted", message: "Findings were reloaded.", kind: "info", timeoutMs: 2200 });
+  } catch (err) {
+    showNotice("Delete Ignore Rule Failed", err.message);
+  }
+}
+
+async function refreshRemediationTasks(campaignID) {
+  if (!campaignID) {
+    state.remediationCampaignTasks = [];
+    renderRemediation();
+    return;
+  }
+  state.remediationCampaignTasks = await api(`/api/remediation/campaigns/${campaignID}/tasks`);
+  renderRemediation();
+}
+
+async function refreshRemediationRepoSuggestions(force = false) {
+  if (state.remediationRepoSuggestionsLoading) return;
+  if (!force && state.remediationRepoSuggestionsLoaded) return;
+  state.remediationRepoSuggestionsLoading = true;
+  try {
+    const res = await api("/api/jobs/repos?page=1&page_size=500");
+    state.remediationRepoSuggestions = Array.isArray(res?.items) ? res.items : [];
+    state.remediationRepoSuggestionsLoaded = true;
+  } catch (err) {
+    // Non-fatal for the page; user can still type manually later if we add support.
+    showNotice("Repo Suggestions Failed", err.message);
+  } finally {
+    state.remediationRepoSuggestionsLoading = false;
+    if (state.view === "remediation") renderRemediation();
+  }
+}
+
+async function refreshRemediation() {
+  state.remediationCampaigns = await api("/api/remediation/campaigns");
+  const ids = new Set((state.remediationCampaigns || []).map(c => c.id));
+  if (state.remediationSelectedCampaignId && !ids.has(state.remediationSelectedCampaignId)) {
+    state.remediationSelectedCampaignId = null;
+  }
+  if (!state.remediationSelectedCampaignId && state.remediationCampaigns.length > 0) {
+    state.remediationSelectedCampaignId = state.remediationCampaigns[0].id;
+  }
+  if (state.remediationSelectedCampaignId) {
+    state.remediationCampaignTasks = await api(`/api/remediation/campaigns/${state.remediationSelectedCampaignId}/tasks`);
+  } else {
+    state.remediationCampaignTasks = [];
+  }
+  if (!state.remediationRepoSuggestionsLoaded) {
+    refreshRemediationRepoSuggestions();
+  }
+  renderRemediation();
+}
+
+async function createRemediationCampaign() {
+  const draft = state.remediationDraft || {};
+  const name = String(draft.name || "").trim();
+  const mode = draft.mode || "triage";
+  const maxReposRaw = String(draft.maxRepos ?? "").trim();
+  const autoPR = !!draft.autoPR;
+  const startNow = draft.startNow !== false;
+
+  let maxRepos = 0;
+  if (maxReposRaw !== "") {
+    maxRepos = Number(maxReposRaw);
+    if (!Number.isFinite(maxRepos) || maxRepos < 0) {
+      showNotice("Invalid Max Repos", "Max repos must be a non-negative number.");
+      return;
+    }
+  }
+  const repos = [...new Set((draft.selectedRepos || []).map(s => String(s || "").trim()).filter(Boolean))];
+  const badRepo = repos.find(r => !/^[^/\s]+\/[^/\s]+$/.test(r));
+  if (badRepo) {
+    showNotice("Invalid Repo List", `Expected owner/repo format. Invalid entry: ${badRepo}`);
+    return;
+  }
+
+  try {
+    const res = await api("/api/remediation/campaigns", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        mode,
+        max_repos: maxRepos,
+        repos,
+        auto_pr: autoPR,
+        start_now: startNow,
+        latest_only: true,
+      }),
+    });
+    if (res && res.id) state.remediationSelectedCampaignId = Number(res.id);
+    showToast({
+      title: startNow ? "Campaign Started" : "Campaign Created",
+      message: startNow ? "Offline remediation campaign is running." : "Campaign created in draft state.",
+      kind: "success",
+      timeoutMs: 3000,
+    });
+    await refreshRemediation();
+    await refreshAgentWorkers();
+  } catch (err) {
+    showNotice("Create Campaign Failed", err.message);
+  }
+}
+
+async function startRemediationCampaign(id) {
+  try {
+    await api(`/api/remediation/campaigns/${id}/start`, { method: "POST", body: "{}" });
+    showToast({ title: "Campaign Started", message: `Campaign #${id} is now running.`, kind: "success", timeoutMs: 2800 });
+    state.remediationSelectedCampaignId = id;
+    await refreshRemediation();
+    await refreshAgentWorkers();
+  } catch (err) {
+    showNotice("Start Campaign Failed", err.message);
+  }
+}
+
+async function stopRemediationCampaign(id) {
+  try {
+    await api(`/api/remediation/campaigns/${id}/stop`, { method: "POST", body: "{}" });
+    showToast({ title: "Campaign Stopped", message: `Campaign #${id} was stopped.`, kind: "warn", timeoutMs: 2800 });
+    await refreshRemediation();
+    await refreshAgentWorkers();
+  } catch (err) {
+    showNotice("Stop Campaign Failed", err.message);
+  }
+}
+
 async function refreshConfig() {
   const payload = await api("/api/config");
   state.configPath = payload.path || "";
@@ -1174,9 +2044,9 @@ async function refreshConfig() {
 
 async function refreshAll() {
   try {
-    await Promise.all([refreshStatus(), refreshJobs(), refreshCron(), refreshAgent()]);
+    await Promise.all([refreshStatus(), refreshJobs(), refreshCron(), refreshAgent(), refreshAgentWorkers(), refreshRemediation()]);
     if (state.selectedJobId) {
-      await selectJob(state.selectedJobId);
+      await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
     }
     if (state.view === "config") {
       await refreshConfig();
@@ -1219,14 +2089,24 @@ function wireGlobalButtons() {
   });
 }
 
-function scheduleLiveRefresh() {
+function scheduleLiveRefresh(opts = {}) {
+  state.liveRefreshPending.jobs = state.liveRefreshPending.jobs || !!opts.jobs;
+  state.liveRefreshPending.detail = state.liveRefreshPending.detail || !!opts.detail;
+  state.liveRefreshPending.workers = state.liveRefreshPending.workers || !!opts.workers;
+  state.liveRefreshPending.remediation = state.liveRefreshPending.remediation || !!opts.remediation;
   if (state.liveRefreshTimer) return;
   state.liveRefreshTimer = setTimeout(async () => {
     state.liveRefreshTimer = null;
+    const pending = { ...(state.liveRefreshPending || {}) };
+    state.liveRefreshPending = { jobs: false, detail: false, workers: false, remediation: false };
     try {
-      await refreshJobs();
-      if (state.selectedJobId) {
-        await selectJob(state.selectedJobId);
+      const tasks = [];
+      if (pending.jobs) tasks.push(refreshJobs());
+      if (pending.workers) tasks.push(refreshAgentWorkers());
+      if (pending.remediation || state.view === "remediation") tasks.push(refreshRemediation());
+      if (tasks.length > 0) await Promise.all(tasks);
+      if (pending.detail && state.selectedJobId) {
+        await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
       }
     } catch (_) {
       // best-effort live refresh; status stream continues even if this fails
@@ -1243,7 +2123,7 @@ async function handleFixAction(id, action) {
     if (!path) return;
     await api(path, { method: "POST", body: "{}" });
     if (state.selectedJobId) {
-      await selectJob(state.selectedJobId);
+      await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
     } else {
       await refreshJobs();
     }
@@ -1360,6 +2240,100 @@ function wirePromptModal() {
       e.preventDefault();
       hidePromptModal(null);
     }
+  });
+}
+
+function detectPathIgnoreSuggestions() {
+  const suggestions = [];
+  const seen = new Set();
+  const paths = (state.selectedJobFindings || []).map(f => String(f.file_path || f.package || "")).filter(Boolean);
+  const common = ["vendor/", "test/", "/testdata/", "node_modules/", ".git/"];
+  for (const sub of common) {
+    if (paths.some(p => p.toLowerCase().includes(sub.toLowerCase()))) {
+      if (!seen.has(sub)) {
+        seen.add(sub);
+        suggestions.push(sub);
+      }
+    }
+  }
+  return suggestions;
+}
+
+function renderPathIgnoreModal() {
+  const body = document.getElementById("pathIgnoreRulesBody");
+  const bar = document.getElementById("pathIgnoreSuggestionBar");
+  if (!body || !bar) return;
+  const rules = state.pathIgnoreRules || [];
+  setHtml(body, state.pathIgnoreRulesLoading
+    ? `<tr><td colspan="5" class="muted">Loading rules…</td></tr>`
+    : (rules.map((r) => `<tr>
+        <td><input type="checkbox" data-path-ignore-toggle="${r.id}" ${r.enabled ? "checked" : ""}></td>
+        <td><input data-path-ignore-substring="${r.id}" value="${escapeHtml(r.substring || "")}" /></td>
+        <td><input data-path-ignore-note="${r.id}" value="${escapeHtml(r.note || "")}" /></td>
+        <td class="muted">${escapeHtml(fmtDate(r.updated_at))}</td>
+        <td class="row-actions">
+          <button class="btn btn-secondary" data-path-ignore-save="${r.id}">Save</button>
+          <button class="btn btn-danger" data-path-ignore-delete="${r.id}">Delete</button>
+        </td>
+      </tr>`).join("") || `<tr><td colspan="5" class="muted">No path ignore rules configured.</td></tr>`));
+
+  const existingSubs = new Set(rules.map(r => String(r.substring || "").toLowerCase()));
+  const suggestions = detectPathIgnoreSuggestions().filter(s => !existingSubs.has(String(s).toLowerCase()));
+  setHtml(bar, suggestions.length
+    ? suggestions.map(s => `<button class="btn btn-secondary" data-path-ignore-suggest="${escapeHtml(s)}">Suggest: ${escapeHtml(s)}</button>`).join("")
+    : `<span class="muted">Suggestions appear when current findings include common noisy paths (e.g. vendor/, test/).</span>`);
+
+  body.querySelectorAll("[data-path-ignore-toggle]").forEach((el) => {
+    el.addEventListener("change", async () => {
+      const id = Number(el.dataset.pathIgnoreToggle);
+      const row = state.pathIgnoreRules.find(r => r.id === id);
+      if (!row) return;
+      await updatePathIgnoreRule(id, { substring: row.substring, note: row.note || "", enabled: !!el.checked });
+    });
+  });
+  body.querySelectorAll("[data-path-ignore-save]").forEach((btn) => btn.addEventListener("click", async () => {
+    const id = Number(btn.dataset.pathIgnoreSave);
+    const sub = body.querySelector(`[data-path-ignore-substring="${id}"]`)?.value || "";
+    const note = body.querySelector(`[data-path-ignore-note="${id}"]`)?.value || "";
+    const enabled = !!body.querySelector(`[data-path-ignore-toggle="${id}"]`)?.checked;
+    await updatePathIgnoreRule(id, { substring: sub, note, enabled });
+  }));
+  body.querySelectorAll("[data-path-ignore-delete]").forEach((btn) => btn.addEventListener("click", async () => {
+    const id = Number(btn.dataset.pathIgnoreDelete);
+    const row = state.pathIgnoreRules.find(r => r.id === id);
+    if (!(await showConfirm({ title: "Delete Path Ignore Rule", message: `Delete ignore rule "${row?.substring || `#${id}`}"?`, confirmLabel: "Delete" }))) return;
+    await deletePathIgnoreRule(id);
+  }));
+  bar.querySelectorAll("[data-path-ignore-suggest]").forEach((btn) => btn.addEventListener("click", () => {
+    const sub = btn.dataset.pathIgnoreSuggest || "";
+    document.getElementById("pathIgnoreNewSubstring").value = sub;
+  }));
+}
+
+function openPathIgnoreModal() {
+  document.getElementById("pathIgnoreModal").classList.remove("hidden");
+  renderPathIgnoreModal();
+  refreshPathIgnoreRules();
+}
+
+function closePathIgnoreModal() {
+  document.getElementById("pathIgnoreModal").classList.add("hidden");
+}
+
+function wirePathIgnoreModal() {
+  document.getElementById("pathIgnoreModalClose")?.addEventListener("click", closePathIgnoreModal);
+  document.getElementById("pathIgnoreModalDone")?.addEventListener("click", closePathIgnoreModal);
+  document.getElementById("pathIgnoreModal")?.addEventListener("click", (e) => {
+    if (e.target.id === "pathIgnoreModal") closePathIgnoreModal();
+  });
+  document.getElementById("pathIgnoreAddBtn")?.addEventListener("click", async () => {
+    const subEl = document.getElementById("pathIgnoreNewSubstring");
+    const noteEl = document.getElementById("pathIgnoreNewNote");
+    const substring = subEl?.value || "";
+    const note = noteEl?.value || "";
+    await createPathIgnoreRule({ substring, note, enabled: true });
+    if (subEl) subEl.value = "";
+    if (noteEl) noteEl.value = "";
   });
 }
 
@@ -1565,6 +2539,7 @@ async function bootstrap() {
   wireNoticeModal();
   wireConfirmModal();
   wirePromptModal();
+  wirePathIgnoreModal();
   wireTriggerModal();
   // Initialize view without rewriting the current URL; route parsing below
   // will choose the correct view and preserve deep links on browser refresh.

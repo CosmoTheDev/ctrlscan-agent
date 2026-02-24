@@ -575,12 +575,7 @@ func (gw *Gateway) handleLogs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "resolving log directory")
 			return
 		}
-		candidate, absErr := filepath.Abs(filepath.Join(absLogDir, fileName))
-		if absErr != nil || !strings.HasPrefix(candidate, absLogDir+string(filepath.Separator)) {
-			writeError(w, http.StatusBadRequest, "invalid file name")
-			return
-		}
-		lines, err = tailFileLines(candidate, tail)
+		lines, err = tailFileLines(absLogDir, fileName, tail)
 		if err != nil {
 			if os.IsNotExist(err) {
 				writeError(w, http.StatusNotFound, "log file not found")
@@ -647,8 +642,21 @@ func listLogFiles(dir string) ([]logFileEntry, error) {
 	return out, nil
 }
 
-func tailFileLines(path string, tail int) ([]string, error) {
-	f, err := os.Open(path) // #nosec G304 -- path is validated by the caller (filepath.Abs + prefix check)
+// tailFileLines reads a file from absLogDir/name, returning up to tail lines.
+// absLogDir must be an absolute path; name must be a single file-name component
+// (already stripped of directory separators by the caller). The function
+// re-validates the final path is within absLogDir before opening it.
+func tailFileLines(absLogDir, name string, tail int) ([]string, error) {
+	// Reconstruct and verify the path is within the safe directory.
+	// This co-locates the guard with the os.Open so CodeQL's taint analysis
+	// can see the sanitization at the sink rather than relying on inter-procedural
+	// propagation from the caller.
+	p := filepath.Join(absLogDir, name)
+	abs, err := filepath.Abs(p)
+	if err != nil || !strings.HasPrefix(abs, absLogDir+string(filepath.Separator)) {
+		return nil, fmt.Errorf("invalid log file path")
+	}
+	f, err := os.Open(abs) // #nosec G304 -- abs validated above: same-dir prefix check
 	if err != nil {
 		return nil, err
 	}

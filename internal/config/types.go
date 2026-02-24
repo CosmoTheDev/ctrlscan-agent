@@ -33,6 +33,9 @@ type AIConfig struct {
 	OllamaURL string `mapstructure:"ollama_url" json:"ollama_url"`
 	// OptimizeForLocal enables smaller prompts / chunking and stricter local timeouts.
 	OptimizeForLocal bool `mapstructure:"optimize_for_local" json:"optimize_for_local"`
+	// MinFixConfidence is the minimum AI confidence (0.0-1.0) required to queue
+	// a generated fix. Set to 0 to keep all fixes, including low-confidence ones.
+	MinFixConfidence float64 `mapstructure:"min_fix_confidence" json:"min_fix_confidence"`
 }
 
 // GitConfig holds credentials for each supported git hosting platform.

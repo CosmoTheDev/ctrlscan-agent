@@ -774,6 +774,31 @@ func (f *FixerAgent) resolveFixCodeContextLines() int {
 	return 10
 }
 
+func (f *FixerAgent) resolveMinFixConfidence() float64 {
+	if raw := strings.TrimSpace(os.Getenv("CTRLSCAN_AI_MIN_FIX_CONFIDENCE")); raw != "" {
+		if v, err := strconv.ParseFloat(raw, 64); err == nil {
+			if v < 0 {
+				return 0
+			}
+			if v > 1 {
+				return 1
+			}
+			return v
+		}
+	}
+	if f.cfg == nil {
+		return 0
+	}
+	v := f.cfg.AI.MinFixConfidence
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
 func chunkFindings(findings []models.FindingSummary, size int) [][]models.FindingSummary {
 	if size <= 0 || len(findings) == 0 {
 		return nil
@@ -969,10 +994,12 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 		return fixAttemptFailed
 	}
 
-	if fixResult.Confidence < 0.3 {
+	minConfidence := f.resolveMinFixConfidence()
+	if fixResult.Confidence < minConfidence {
 		args := append(remediationJobLogFields(job),
 			"finding_id", finding.ID,
 			"confidence", fixResult.Confidence,
+			"min_confidence", minConfidence,
 		)
 		slog.Info("Skipping low-confidence fix", args...)
 		if f.queueDeterministicSCABumpFallback(ctx, finding, job, "low_confidence") {

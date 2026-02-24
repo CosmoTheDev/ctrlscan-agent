@@ -22,11 +22,15 @@ type Orchestrator struct {
 	triggerCh chan struct{}
 	opts      OrchestratorOptions
 
-	mu                sync.Mutex
-	activeSweepCancel context.CancelFunc
-	pendingTrigger    *TriggerRequest
-	prTriggerCh       chan struct{}
-	workerStates      map[string]WorkerStatus
+	mu                          sync.Mutex
+	activeSweepCancel           context.CancelFunc
+	activeRemediationCancel     context.CancelFunc
+	activeRemediationTaskID     int64
+	activeRemediationCampaignID int64
+	activeRemediationScanJobID  int64
+	pendingTrigger              *TriggerRequest
+	prTriggerCh                 chan struct{}
+	workerStates                map[string]WorkerStatus
 }
 
 // OrchestratorOptions controls loop behavior for different runtimes (CLI agent vs gateway).
@@ -134,6 +138,40 @@ func (o *Orchestrator) StopCurrentSweep() bool {
 	cancel := o.activeSweepCancel
 	o.mu.Unlock()
 	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// CancelActiveRemediationForScanJob cancels the currently running remediation
+// task when it matches the given scan job id.
+func (o *Orchestrator) CancelActiveRemediationForScanJob(scanJobID int64) bool {
+	if scanJobID <= 0 {
+		return false
+	}
+	o.mu.Lock()
+	cancel := o.activeRemediationCancel
+	active := o.activeRemediationScanJobID
+	o.mu.Unlock()
+	if cancel == nil || active != scanJobID {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// CancelActiveRemediationForCampaign cancels the currently running remediation
+// task when it belongs to the given campaign id.
+func (o *Orchestrator) CancelActiveRemediationForCampaign(campaignID int64) bool {
+	if campaignID <= 0 {
+		return false
+	}
+	o.mu.Lock()
+	cancel := o.activeRemediationCancel
+	active := o.activeRemediationCampaignID
+	o.mu.Unlock()
+	if cancel == nil || active != campaignID {
 		return false
 	}
 	cancel()
@@ -591,6 +629,27 @@ func (o *Orchestrator) emitRemediationEvent(eventType string, payload map[string
 	}
 }
 
+func (o *Orchestrator) remediationTaskIsStopped(ctx context.Context, taskID int64) bool {
+	if taskID <= 0 {
+		return false
+	}
+	type row struct {
+		TaskStatus     string `db:"task_status"`
+		CampaignStatus string `db:"campaign_status"`
+	}
+	var r row
+	if err := o.db.Get(ctx, &r, `
+		SELECT COALESCE(t.status, '') AS task_status,
+		       COALESCE(c.status, '') AS campaign_status
+		FROM remediation_tasks t
+		LEFT JOIN remediation_campaigns c ON c.id = t.campaign_id
+		WHERE t.id = ?`, taskID); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.TaskStatus), "stopped") ||
+		strings.EqualFold(strings.TrimSpace(r.CampaignStatus), "stopped")
+}
+
 func (o *Orchestrator) processOneRemediationTask(ctx context.Context, aiProv ai.AIProvider, repoProviders []repository.RepoProvider, workerName string) {
 	type taskRow struct {
 		ID         int64  `db:"id"`
@@ -718,7 +777,25 @@ func (o *Orchestrator) processOneRemediationTask(ctx context.Context, aiProv ai.
 		})
 	}
 	before := countFixQueueForScanJob(ctx, o.db, task.ScanJobID)
-	if err := fixer.processFixJob(ctx, fixJob{
+	taskCtx, taskCancel := context.WithCancel(ctx)
+	o.mu.Lock()
+	o.activeRemediationCancel = taskCancel
+	o.activeRemediationTaskID = task.ID
+	o.activeRemediationCampaignID = task.CampaignID
+	o.activeRemediationScanJobID = task.ScanJobID
+	o.mu.Unlock()
+	defer func() {
+		taskCancel()
+		o.mu.Lock()
+		if o.activeRemediationTaskID == task.ID {
+			o.activeRemediationCancel = nil
+			o.activeRemediationTaskID = 0
+			o.activeRemediationCampaignID = 0
+			o.activeRemediationScanJobID = 0
+		}
+		o.mu.Unlock()
+	}()
+	if err := fixer.processFixJob(taskCtx, fixJob{
 		ScanJobID:         task.ScanJobID,
 		RemediationTaskID: task.ID,
 		WorkerName:        workerName,
@@ -729,6 +806,18 @@ func (o *Orchestrator) processOneRemediationTask(ctx context.Context, aiProv ai.
 		Commit:            cloneResult.Commit,
 		RepoPath:          cloneResult.LocalPath,
 	}); err != nil {
+		if taskCtx.Err() != nil || o.remediationTaskIsStopped(ctx, task.ID) {
+			_ = o.db.Exec(ctx, `UPDATE remediation_tasks SET status = 'stopped', completed_at = ?, error_msg = CASE WHEN error_msg = '' THEN 'stopped by user' ELSE error_msg END WHERE id = ?`,
+				time.Now().UTC().Format(time.RFC3339), task.ID)
+			_ = o.refreshRemediationCampaignStats(ctx, task.CampaignID)
+			o.setWorkerStatus(WorkerStatus{
+				Name: workerName, Kind: "remediation", Status: "waiting", Action: "waiting for campaigns",
+			})
+			o.emitRemediationEvent("campaign.task.failed", map[string]any{
+				"campaign_id": task.CampaignID, "task_id": task.ID, "repo": repoFull, "error": "stopped by user",
+			})
+			return
+		}
 		msg := fmt.Sprintf("processing remediation task: %v", err)
 		_ = o.db.Exec(ctx, `UPDATE remediation_tasks SET status = 'failed', error_msg = ?, completed_at = ? WHERE id = ?`,
 			msg, time.Now().UTC().Format(time.RFC3339), task.ID)
@@ -742,6 +831,13 @@ func (o *Orchestrator) processOneRemediationTask(ctx context.Context, aiProv ai.
 		return
 	}
 	after := countFixQueueForScanJob(ctx, o.db, task.ScanJobID)
+	if o.remediationTaskIsStopped(ctx, task.ID) {
+		_ = o.refreshRemediationCampaignStats(ctx, task.CampaignID)
+		o.setWorkerStatus(WorkerStatus{
+			Name: workerName, Kind: "remediation", Status: "waiting", Action: "waiting for campaigns",
+		})
+		return
+	}
 	if autoPR == 1 {
 		o.TriggerPRProcessing()
 	}

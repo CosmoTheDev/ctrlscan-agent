@@ -1082,7 +1082,30 @@ export async function stopReviewCampaignForSelectedScan() {
     } else {
       showNotice("Nothing To Stop", "No running remediation campaign was found for this scan.");
     }
-    await Promise.all([refreshRemediation(), refreshAgentWorkers()]);
+    // Optimistically clear matching remediation workers for this scan so the
+    // detail banner/buttons stop showing "AI Reviewing…" immediately.
+    const jobID = Number(job.id || 0);
+    state.agentWorkers = (state.agentWorkers || []).map((w) => {
+      if (!w || String(w.kind || "") !== "remediation") return w;
+      if (Number(w.scan_job_id || 0) !== jobID) return w;
+      const status = String(w.status || "").toLowerCase();
+      if (status !== "running") return w;
+      return {
+        ...w,
+        status: "stopped",
+        action: "stopped by user",
+        progress_note: "stop requested by user",
+      };
+    });
+    if (state.view === "scan-detail") renderScanDetailPage();
+
+    await Promise.all([
+      refreshRemediation(),
+      refreshAgentWorkers(),
+      state.selectedJobId === jobID
+        ? selectJob(jobID, { preserveFindingsState: true, preserveRemediationState: true })
+        : Promise.resolve(),
+    ]);
   } catch (err) {
     showNotice("Stop AI Review Failed", err.message);
   } finally {

@@ -2190,6 +2190,9 @@ func (gw *Gateway) handleStopJobRemediation(w http.ResponseWriter, r *http.Reque
 		    AND status IN ('pending','running')`, ph),
 		taskArgs...,
 	)
+	if gw.orch != nil {
+		_ = gw.orch.CancelActiveRemediationForScanJob(scanJobID)
+	}
 	for _, id := range ids {
 		_ = gw.db.Exec(ctx, `UPDATE remediation_campaigns SET
 			total_tasks = (SELECT COUNT(*) FROM remediation_tasks WHERE campaign_id = ?),
@@ -3359,6 +3362,9 @@ func (gw *Gateway) handleStopRemediationCampaign(w http.ResponseWriter, r *http.
 		return
 	}
 	_ = gw.db.Exec(r.Context(), `UPDATE remediation_tasks SET status = 'stopped', completed_at = ? WHERE campaign_id = ? AND status IN ('pending','running')`, now, id)
+	if gw.orch != nil {
+		_ = gw.orch.CancelActiveRemediationForCampaign(id)
+	}
 	gw.broadcaster.send(SSEEvent{Type: "campaign.stopped", Payload: map[string]any{"campaign_id": id}})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "id": id})
 }

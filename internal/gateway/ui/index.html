@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -19,6 +19,9 @@
       <nav class="nav" id="nav"></nav>
       <div class="sidebar-footer">
         <div id="healthPill" class="pill">Health: unknown</div>
+        <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">
+          <span id="themeToggleLabel">Light Mode</span>
+        </button>
       </div>
     </aside>
 
@@ -45,6 +48,12 @@
       <section id="view-events" class="view"></section>
     </main>
   </div>
+  <div id="globalLoadingOverlay" class="global-loading-overlay hidden" aria-live="polite" aria-busy="true">
+    <div class="global-loading-card">
+      <span class="spinner-dot spinner-dot-accent" aria-hidden="true"></span>
+      <div id="globalLoadingMessage">Loading…</div>
+    </div>
+  </div>
   <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 
   <div id="triggerModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="triggerModalTitle">
@@ -66,8 +75,12 @@
               <span class="muted">These selections apply to this trigger only.</span>
             </div>
             <div id="targetChecklist" class="check-grid"></div>
-            <label>Workers (optional override)
+            <label id="triggerWorkersWrap">Workers (optional override)
               <input id="triggerWorkers" type="number" min="1" max="64" placeholder="Leave blank to use configured value">
+            </label>
+            <label id="triggerForceWrap" class="checkbox-inline">
+              <input id="triggerForceScan" type="checkbox">
+              <span>Force scan (do not skip recently scanned repos)</span>
             </label>
           </div>
           <div class="card modal-note">
@@ -167,6 +180,6 @@
       </div>
     </div>
   </div>
-  <script src="/ui/app.js"></script>
+  <script type="module" src="/ui/app.js"></script>
 </body>
 </html>

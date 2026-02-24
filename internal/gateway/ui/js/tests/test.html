@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ctrlscan UI Unit Tests</title>
+  <style>
+    body { font-family: monospace; background: #191919; color: #e5e5e5; padding: 24px; }
+    h1 { font-size: 18px; margin-bottom: 16px; }
+    .pass { color: #34d399; }
+    .fail { color: #f87171; }
+    .summary { margin-top: 20px; font-size: 16px; font-weight: bold; }
+    .result { padding: 4px 0; }
+    pre { background: #111; padding: 8px; border-radius: 4px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>ctrlscan UI — Unit Test Runner</h1>
+  <div id="output">Running tests…</div>
+  <script type="module">
+    import { passed, failed, results } from './utils.test.js';
+
+    const out = document.getElementById("output");
+    const rows = results.map(r => {
+      if (r.ok) {
+        return `<div class="result pass">✓ ${r.description}</div>`;
+      }
+      return `<div class="result fail">✗ ${r.description}<pre>got:      ${JSON.stringify(r.got)}\nexpected: ${JSON.stringify(r.expected)}</pre></div>`;
+    });
+    out.innerHTML = rows.join("") + `<div class="summary ${failed === 0 ? "pass" : "fail"}">${passed} passed, ${failed} failed</div>`;
+  </script>
+</body>
+</html>

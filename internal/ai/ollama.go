@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/netip"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -17,9 +21,13 @@ import (
 // OllamaProvider implements AIProvider using a local Ollama server.
 // Configure with: ai.provider = "ollama", ai.ollama_url = "http://localhost:11434"
 type OllamaProvider struct {
-	baseURL string
-	model   string
-	client  *http.Client
+	baseURL      string
+	model        string
+	client       *http.Client
+	maxAttempts  int
+	retryBackoff time.Duration
+	debug        bool
+	debugPrompts bool
 }
 
 // NewOllama creates an OllamaProvider from cfg.
@@ -28,14 +36,32 @@ func NewOllama(cfg config.AIConfig) (*OllamaProvider, error) {
 	if base == "" {
 		base = "http://localhost:11434"
 	}
+	base, err := normalizeLocalOllamaBaseURL(base)
+	if err != nil {
+		return nil, err
+	}
 	model := cfg.Model
 	if model == "" {
 		model = "llama3.2"
 	}
+	timeout := 180 * time.Second
+	maxAttempts := 1
+	retryBackoff := 2 * time.Second
+	if cfg.OptimizeForLocal {
+		// Fail faster and retry once for local models that frequently time out or
+		// hit transient Ollama 5xx errors under load.
+		timeout = 90 * time.Second
+		maxAttempts = 2
+		retryBackoff = 1500 * time.Millisecond
+	}
 	return &OllamaProvider{
-		baseURL: strings.TrimRight(base, "/"),
-		model:   model,
-		client:  &http.Client{Timeout: 180 * time.Second},
+		baseURL:      base,
+		model:        model,
+		client:       &http.Client{Timeout: timeout},
+		maxAttempts:  maxAttempts,
+		retryBackoff: retryBackoff,
+		debug:        envBool("CTRLSCAN_OLLAMA_DEBUG"),
+		debugPrompts: envBool("CTRLSCAN_OLLAMA_DEBUG_PROMPTS"),
 	}, nil
 }
 
@@ -46,11 +72,16 @@ func (o *OllamaProvider) IsAvailable(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
+	// #nosec G704 -- o.baseURL is restricted to localhost/loopback and validated in normalizeLocalOllamaBaseURL.
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Debug("closing Ollama tags response body failed", "error", closeErr)
+		}
+	}()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -72,12 +103,30 @@ Return only valid JSON.`, string(findingsJSON))
 	if err := json.Unmarshal([]byte(resp), &result); err != nil {
 		result.Summary = resp
 	}
+
+	// Attach original finding data to each prioritised item (mirrors OpenAI provider).
+	findingMap := make(map[string]models.FindingSummary, len(findings))
+	for _, f := range findings {
+		findingMap[f.ID] = f
+	}
+	for i := range result.Prioritised {
+		if f, ok := findingMap[result.Prioritised[i].FindingID]; ok {
+			result.Prioritised[i].Finding = f
+		}
+	}
 	return &result, nil
 }
 
 func (o *OllamaProvider) GenerateFix(ctx context.Context, req FixRequest) (*FixResult, error) {
 	reqJSON, _ := json.MarshalIndent(req, "", "  ")
-	prompt := fmt.Sprintf(`Generate a minimal security fix as JSON with "patch", "explanation", "confidence".
+	prompt := fmt.Sprintf(`Generate a minimal security fix as JSON with "patch", "explanation", "confidence", and optional "apply_hints".
+"apply_hints" should be an object and may include:
+- "target_files" (array of repo-relative file paths expected to change)
+- "apply_strategy" ("git_apply", "edit_file_directly", or "dependency_bump")
+- "prerequisites" (array of assumptions/checks before applying)
+- "post_apply_checks" (array of commands/checks to run after applying)
+- "fallback_patch_notes" (brief notes if git apply may fail due to offsets/context)
+- "risk_notes" (brief reviewer caution notes)
 Context: %s
 Return only valid JSON.`, string(reqJSON))
 
@@ -140,29 +189,136 @@ func (o *OllamaProvider) complete(ctx context.Context, prompt string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("marshalling ollama request: %w", err)
 	}
+	if o.debug {
+		slog.Info("Ollama request",
+			"model", o.model,
+			"prompt_chars", len(prompt),
+			"request_bytes", len(body),
+			"base_url", o.baseURL,
+		)
+		if o.debugPrompts {
+			slog.Info("Ollama prompt body", "prompt", prompt)
+		}
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		o.baseURL+"/api/generate", bytes.NewReader(body))
+	attempts := o.maxAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			o.baseURL+"/api/generate", bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		// #nosec G704 -- o.baseURL is restricted to localhost/loopback and validated in normalizeLocalOllamaBaseURL.
+		resp, err := o.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("calling Ollama API: %w", err)
+		} else {
+			data, readErr := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if readErr != nil {
+				if closeErr != nil {
+					lastErr = fmt.Errorf("reading Ollama response: %w (close body: %v)", readErr, closeErr)
+				} else {
+					lastErr = fmt.Errorf("reading Ollama response: %w", readErr)
+				}
+			} else if closeErr != nil {
+				lastErr = fmt.Errorf("closing Ollama response body: %w", closeErr)
+			} else if resp.StatusCode != http.StatusOK {
+				msg := strings.TrimSpace(string(data))
+				if msg == "" {
+					msg = http.StatusText(resp.StatusCode)
+				}
+				lastErr = fmt.Errorf("ollama /api/generate returned %d: %s", resp.StatusCode, truncateForError(msg, 300))
+				if !shouldRetryOllamaStatus(resp.StatusCode) {
+					return "", lastErr
+				}
+			} else {
+				var apiResp ollamaResponse
+				if err := json.Unmarshal(data, &apiResp); err != nil {
+					return "", fmt.Errorf("parsing Ollama response: %w", err)
+				}
+				return strings.TrimSpace(apiResp.Response), nil
+			}
+		}
+
+		if attempt >= attempts || ctx.Err() != nil {
+			break
+		}
+		slog.Warn("Ollama generate failed; retrying",
+			"attempt", attempt,
+			"max_attempts", attempts,
+			"error", lastErr,
+		)
+		if o.retryBackoff > 0 {
+			select {
+			case <-time.After(o.retryBackoff):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("ollama /api/generate failed")
+	}
+	return "", lastErr
+}
+
+func shouldRetryOllamaStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
+}
+
+func truncateForError(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
+func normalizeLocalOllamaBaseURL(raw string) (string, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+
+	u, err := url.Parse(baseURL)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("invalid Ollama URL: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("calling Ollama API: %w", err)
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid Ollama URL scheme %q (expected http or https)", u.Scheme)
 	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reading Ollama response: %w", err)
+	if u.Host == "" || u.Hostname() == "" {
+		return "", fmt.Errorf("invalid Ollama URL: missing host")
 	}
-
-	var apiResp ollamaResponse
-	if err := json.Unmarshal(data, &apiResp); err != nil {
-		return "", fmt.Errorf("parsing Ollama response: %w", err)
+	if u.User != nil {
+		return "", fmt.Errorf("invalid Ollama URL: credentials are not supported")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("invalid Ollama URL: query and fragment are not supported")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("invalid Ollama URL: base path is not supported")
 	}
 
-	return strings.TrimSpace(apiResp.Response), nil
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return strings.TrimRight(u.String(), "/"), nil
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsLoopback() {
+		return strings.TrimRight(u.String(), "/"), nil
+	}
+
+	return "", fmt.Errorf("Ollama URL must point to localhost or a loopback address")
+}
+
+func envBool(key string) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/database"
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/findings"
 	"github.com/CosmoTheDev/ctrlscan-agent/models"
 )
 
@@ -82,10 +83,43 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (*RunResults, error)
 	// Update scan job status.
 	if jobID > 0 {
 		r.persistScannerResults(ctx, jobID, results)
+		r.persistNormalizedFindingsLifecycle(ctx, jobID, opts)
 		r.finaliseScanJob(ctx, jobID, results)
 	}
 
 	return results, nil
+}
+
+func (r *Runner) persistNormalizedFindingsLifecycle(ctx context.Context, jobID int64, opts *RunOptions) {
+	if r.db == nil || jobID <= 0 || opts == nil {
+		return
+	}
+	summary, err := findings.PersistNormalizedFromRaw(dbWriteCtx(ctx), r.db, findings.PersistScanOptions{
+		ScanJobID: jobID,
+		Provider:  opts.Provider,
+		Owner:     opts.Owner,
+		Repo:      opts.Repo,
+		Branch:    opts.Branch,
+		CommitSHA: opts.Commit,
+		ScannedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		if findings.IsNoSuchTableError(err) {
+			slog.Debug("Normalized finding lifecycle tables not available yet; skipping persistence", "job_id", jobID)
+			return
+		}
+		findings.LogPersistError(jobID, err)
+		return
+	}
+	if summary != nil {
+		slog.Info("Persisted normalized finding lifecycle summary",
+			"job_id", jobID,
+			"present", summary.PresentCount,
+			"introduced", summary.IntroducedCount,
+			"fixed", summary.FixedCount,
+			"reintroduced", summary.ReintroducedCount,
+		)
+	}
 }
 
 func (r *Runner) persistScannerResults(ctx context.Context, jobID int64, results *RunResults) {

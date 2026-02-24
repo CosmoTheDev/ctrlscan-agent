@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,7 +65,7 @@ func New(cfg *config.Config, db database.DB) *Gateway {
 		broadcaster: b,
 		startedAt:   time.Now(),
 	}
-	gw.scheduler = newScheduler(db, gw.trigger, b.send)
+	gw.scheduler = newScheduler(db, gw.triggerSchedule, b.send)
 	return gw
 }
 
@@ -94,10 +95,32 @@ func (gw *Gateway) SetLogDir(path string) {
 
 // trigger wakes the orchestrator and broadcasts an agent.triggered event.
 func (gw *Gateway) trigger() {
-	gw.triggerWithOptions(nil, 0, nil)
+	gw.triggerWithOptions(nil, 0, nil, false, "")
 }
 
-func (gw *Gateway) triggerWithOptions(scanTargets []string, workers int, selectedRepos []agent.SelectedRepo) {
+func (gw *Gateway) triggerSchedule(sched Schedule) {
+	scope, err := parseScheduleScope(sched)
+	if err != nil {
+		slog.Warn("gateway: ignoring schedule trigger due to invalid scope",
+			"id", sched.ID, "name", sched.Name, "error", err)
+		return
+	}
+	selectedRepos, err := gw.resolveScheduleSelectedRepos(context.Background(), scope)
+	if err != nil {
+		slog.Warn("gateway: ignoring schedule trigger due to unresolved scope selectors",
+			"id", sched.ID, "name", sched.Name, "error", err)
+		return
+	}
+	mode := strings.TrimSpace(scope.Mode)
+	if !isValidAgentMode(mode) {
+		slog.Warn("gateway: ignoring schedule trigger due to invalid mode",
+			"id", sched.ID, "name", sched.Name, "mode", mode)
+		return
+	}
+	gw.triggerWithOptions(scope.Targets, 0, selectedRepos, false, mode)
+}
+
+func (gw *Gateway) triggerWithOptions(scanTargets []string, workers int, selectedRepos []agent.SelectedRepo, forceScan bool, mode string) {
 	gw.mu.RLock()
 	paused := gw.paused
 	gw.mu.RUnlock()
@@ -107,11 +130,13 @@ func (gw *Gateway) triggerWithOptions(scanTargets []string, workers int, selecte
 		return
 	}
 	var req *agent.TriggerRequest
-	if len(scanTargets) > 0 || workers > 0 || len(selectedRepos) > 0 {
+	if len(scanTargets) > 0 || workers > 0 || len(selectedRepos) > 0 || forceScan || strings.TrimSpace(mode) != "" {
 		req = &agent.TriggerRequest{
 			ScanTargets:   append([]string(nil), scanTargets...),
 			Workers:       workers,
 			SelectedRepos: append([]agent.SelectedRepo(nil), selectedRepos...),
+			ForceScan:     forceScan,
+			Mode:          strings.TrimSpace(mode),
 		}
 	}
 	if req != nil {
@@ -132,6 +157,12 @@ func (gw *Gateway) triggerWithOptions(scanTargets []string, workers int, selecte
 	}
 	if len(selectedRepos) > 0 {
 		payload["selected_repos"] = len(selectedRepos)
+	}
+	if forceScan {
+		payload["force_scan"] = true
+	}
+	if strings.TrimSpace(mode) != "" {
+		payload["mode"] = strings.TrimSpace(mode)
 	}
 	gw.broadcaster.send(SSEEvent{Type: "agent.triggered", Payload: payload})
 }

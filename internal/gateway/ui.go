@@ -41,6 +41,8 @@ func (gw *Gateway) handleUIAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch filepath.Ext(name) {
+	case ".html":
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	case ".css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	case ".js":

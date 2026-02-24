@@ -133,6 +133,13 @@ Return a JSON object with:
 - "patch": a valid unified diff (--- a/file +++ b/file format) that fixes the vulnerability
 - "explanation": a concise explanation of what was changed and why
 - "confidence": a float from 0.0 to 1.0 indicating how confident you are the fix is correct
+- "apply_hints": object (optional but recommended) with:
+  - "target_files": array of expected files touched by the patch
+  - "apply_strategy": one of "git_apply", "edit_file_directly", "dependency_bump"
+  - "prerequisites": array of assumptions that must be true before applying
+  - "post_apply_checks": array of commands/checks a reviewer should run
+  - "fallback_patch_notes": brief notes if hunk offsets may fail
+  - "risk_notes": brief reviewer caution notes
 
 Finding and context:
 %s

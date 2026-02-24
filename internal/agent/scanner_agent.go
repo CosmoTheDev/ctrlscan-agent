@@ -19,13 +19,14 @@ type ScannerAgent struct {
 	cfg           *config.Config
 	db            database.DB
 	scanners      []scanner.Scanner
+	forceScan     bool
 	onRepoSkipped func(payload map[string]any)
 	onWorkerState func(WorkerStatus)
 }
 
 // NewScannerAgent creates a ScannerAgent worker.
-func NewScannerAgent(id int, cfg *config.Config, db database.DB, scanners []scanner.Scanner, onRepoSkipped func(payload map[string]any), onWorkerState func(WorkerStatus)) *ScannerAgent {
-	return &ScannerAgent{id: id, cfg: cfg, db: db, scanners: scanners, onRepoSkipped: onRepoSkipped, onWorkerState: onWorkerState}
+func NewScannerAgent(id int, cfg *config.Config, db database.DB, scanners []scanner.Scanner, forceScan bool, onRepoSkipped func(payload map[string]any), onWorkerState func(WorkerStatus)) *ScannerAgent {
+	return &ScannerAgent{id: id, cfg: cfg, db: db, scanners: scanners, forceScan: forceScan, onRepoSkipped: onRepoSkipped, onWorkerState: onWorkerState}
 }
 
 // Run processes repo jobs from in and emits fix jobs to out.
@@ -168,6 +169,9 @@ func (s *ScannerAgent) emitWorkerState(status, action, repo string, scanJobID in
 }
 
 func (s *ScannerAgent) shouldSkipRepo(ctx context.Context, job repoJob) (bool, string) {
+	if s.forceScan {
+		return false, ""
+	}
 	type row struct {
 		Status      string  `db:"status"`
 		StartedAt   string  `db:"started_at"`

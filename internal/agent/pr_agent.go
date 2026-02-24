@@ -296,7 +296,7 @@ func applyPatch(repoPath, patch string) error {
 		return fmt.Errorf("invalid patch format (expected unified diff with ---/+++/@@ hunks)")
 	}
 	patchFile := filepath.Join(repoPath, ".ctrlscan.patch")
-	if err := os.WriteFile(patchFile, []byte(patch), 0o644); err != nil {
+	if err := os.WriteFile(patchFile, []byte(patch), 0o600); err != nil {
 		return err
 	}
 	defer os.Remove(patchFile)
@@ -329,8 +329,11 @@ func applyAdditionsDirectly(repoPath, patch string) error {
 	if targetFile == "" {
 		return fmt.Errorf("no target file in patch")
 	}
-	filePath := filepath.Join(repoPath, targetFile)
-	content, err := os.ReadFile(filePath)
+	filePath, err := safeRepoJoin(repoPath, targetFile)
+	if err != nil {
+		return fmt.Errorf("unsafe path %q: %w", targetFile, err)
+	}
+	content, err := os.ReadFile(filePath) // #nosec G304 -- path validated by safeRepoJoin
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", targetFile, err)
 	}
@@ -452,7 +455,7 @@ func applyAdditionsDirectly(repoPath, patch string) error {
 		}
 	}
 
-	return os.WriteFile(filePath, []byte(strings.Join(fileLines, "\n")), 0o644)
+	return os.WriteFile(filePath, []byte(strings.Join(fileLines, "\n")), 0o600)
 }
 
 // findLineByContent returns the index of the first line in lines (at or after
@@ -509,7 +512,7 @@ func runCmd(ctx context.Context, dir, name string, args ...string) error {
 	default:
 		return fmt.Errorf("runCmd: disallowed command %q", name)
 	}
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- name validated against allowlist above
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- name validated against allowlist above; //nolint:gosec // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -519,13 +522,28 @@ func runCmd(ctx context.Context, dir, name string, args ...string) error {
 }
 
 func runGit(dir string, args ...string) error {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", args...) // #nosec G204 -- "git" is a literal; args are controlled by callers
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, string(out))
 	}
 	return nil
+}
+
+// safeRepoJoin joins base and rel, returning an error if the result would
+// escape the base directory. This prevents path traversal when rel comes from
+// external sources such as scan findings or AI-generated patch headers.
+func safeRepoJoin(base, rel string) (string, error) {
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", fmt.Errorf("resolving repo root: %w", err)
+	}
+	joined := filepath.Join(absBase, filepath.Clean(rel))
+	if joined != absBase && !strings.HasPrefix(joined, absBase+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes repo root", rel)
+	}
+	return joined, nil
 }
 
 func injectToken(repoURL, token string) string {

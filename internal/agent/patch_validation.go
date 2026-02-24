@@ -3,7 +3,6 @@ package agent
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -76,7 +75,11 @@ func repairHunkHeaders(patch, repoPath string) string {
 		return patch
 	}
 
-	content, err := os.ReadFile(filepath.Join(repoPath, targetFile))
+	safePath, pathErr := safeRepoJoin(repoPath, targetFile)
+	if pathErr != nil {
+		return patch // unsafe path; let git give the real error
+	}
+	content, err := os.ReadFile(safePath) // #nosec G304 -- path validated by safeRepoJoin
 	if err != nil {
 		return patch // file not found; let git give the real error
 	}

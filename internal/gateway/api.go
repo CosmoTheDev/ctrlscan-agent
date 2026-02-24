@@ -558,6 +558,8 @@ func (gw *Gateway) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if fileName != "" {
+		// Reject any path that is not a bare file name (no directory
+		// separators or parent-directory references).
 		clean := filepath.Base(fileName)
 		if clean != fileName || strings.Contains(fileName, "..") {
 			writeError(w, http.StatusBadRequest, "invalid file name")
@@ -568,7 +570,17 @@ func (gw *Gateway) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 	var lines []string
 	if fileName != "" {
-		lines, err = tailFileLines(filepath.Join(logDir, fileName), tail)
+		absLogDir, absErr := filepath.Abs(logDir)
+		if absErr != nil {
+			writeError(w, http.StatusInternalServerError, "resolving log directory")
+			return
+		}
+		candidate, absErr := filepath.Abs(filepath.Join(absLogDir, fileName))
+		if absErr != nil || !strings.HasPrefix(candidate, absLogDir+string(filepath.Separator)) {
+			writeError(w, http.StatusBadRequest, "invalid file name")
+			return
+		}
+		lines, err = tailFileLines(candidate, tail)
 		if err != nil {
 			if os.IsNotExist(err) {
 				writeError(w, http.StatusNotFound, "log file not found")
@@ -636,7 +648,7 @@ func listLogFiles(dir string) ([]logFileEntry, error) {
 }
 
 func tailFileLines(path string, tail int) ([]string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- path is validated by the caller (filepath.Abs + prefix check)
 	if err != nil {
 		return nil, err
 	}

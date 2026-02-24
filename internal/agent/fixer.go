@@ -2057,8 +2057,11 @@ func (f *FixerAgent) readCodeContext(repoPath, filePath string, lineNum, context
 	if filePath == "" {
 		return ""
 	}
-	full := filepath.Join(repoPath, filePath)
-	data, err := os.ReadFile(full)
+	full, pathErr := safeRepoJoin(repoPath, filePath)
+	if pathErr != nil {
+		return ""
+	}
+	data, err := os.ReadFile(full) // #nosec G304 -- path validated by safeRepoJoin
 	if err != nil {
 		return ""
 	}
@@ -2104,7 +2107,11 @@ func (f *FixerAgent) readFileForFix(repoPath, filePath string) (string, int) {
 	if filePath == "" {
 		return "", 0
 	}
-	data, err := os.ReadFile(filepath.Join(repoPath, filePath))
+	safePath, pathErr := safeRepoJoin(repoPath, filePath)
+	if pathErr != nil {
+		return "", 0
+	}
+	data, err := os.ReadFile(safePath) // #nosec G304 -- path validated by safeRepoJoin
 	if err != nil {
 		return "", 0
 	}
@@ -2160,6 +2167,6 @@ func truncate(s string, max int) string {
 
 // openBrowser opens a URL in the default browser.
 func openBrowser(url string) {
-	cmd := exec.Command("open", url)
+	cmd := exec.Command("open", url) // #nosec G204 -- "open" is a macOS launcher literal; url is an https URL
 	_ = cmd.Start()
 }

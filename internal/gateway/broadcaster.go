@@ -41,8 +41,7 @@ func (b *Broadcaster) send(evt SSEEvent) {
 		return
 	}
 	// SSE wire format: "data: <json>\n\n"
-	frame := make([]byte, 0, len(raw)+8)
-	frame = append(frame, "data: "...)
+	frame := []byte("data: ")
 	frame = append(frame, raw...)
 	frame = append(frame, '\n', '\n')
 

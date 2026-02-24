@@ -15,7 +15,9 @@ import { escapeHtml, fmtDate, fmtDuration, setHtml, severityBucket, statusClass 
 
 function getInlineFindingsViewModel() {
   const all = state.selectedJobFindings || [];
-  const search = String(state.scansInlineFindingsSearch || "").trim().toLowerCase();
+  const search = String(state.scansInlineFindingsSearch || "")
+    .trim()
+    .toLowerCase();
   const filtered = search
     ? all.filter((f) => {
         const hay = [f.kind, f.scanner, f.severity, f.file_path, f.package, f.version, f.title, f.message]
@@ -38,7 +40,9 @@ function getInlineFindingsViewModel() {
 
 function renderRepoCombo() {
   const selected = state.scansFiltersDraft.repos || [];
-  const search = String(state.scansRepoComboSearch || "").trim().toLowerCase();
+  const search = String(state.scansRepoComboSearch || "")
+    .trim()
+    .toLowerCase();
   const suggestions = state.scansRepoSuggestions || [];
   const isOpen = !!state.scansRepoComboOpen;
 
@@ -110,8 +114,14 @@ export function renderScans() {
   const selectedJob = state.selectedJob;
   const selectedJobLoading = !!state.selectedJobLoading;
   const scanners = state.selectedJobScanners || [];
-  const { filtered: inlineFindings, total: ifTotal, totalPages: ifTotalPages, page: ifPage, start: ifStart, pageSize: ifPageSize } =
-    getInlineFindingsViewModel();
+  const {
+    filtered: inlineFindings,
+    total: ifTotal,
+    totalPages: ifTotalPages,
+    page: ifPage,
+    start: ifStart,
+    pageSize: ifPageSize,
+  } = getInlineFindingsViewModel();
 
   // Workers
   const scanWorkers = (state.agentWorkers || []).filter((w) => String(w?.kind || "").toLowerCase() === "scan");
@@ -196,8 +206,7 @@ export function renderScans() {
           <label style="width:auto">
             <select id="scansStatusFilter">
               ${STATUS_OPTIONS.map(
-                (s) =>
-                  `<option value="${s}" ${fd.status === s ? "selected" : ""}>${s || "All statuses"}</option>`
+                (s) => `<option value="${s}" ${fd.status === s ? "selected" : ""}>${s || "All statuses"}</option>`
               ).join("")}
             </select>
           </label>

@@ -121,9 +121,17 @@ export function renderOverview() {
     if (last) await openScanDetailPage(last.id);
   });
   // Severity cards → vulnerabilities view with pre-set filter
-  root.querySelector("#ovCardHigh")?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "HIGH" }));
-  root.querySelector("#ovCardMedium")?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "MEDIUM" }));
-  root.querySelector("#ovCardLow")?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "LOW" }));
-  root.querySelector("#ovCardCritical")?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "CRITICAL" }));
+  root
+    .querySelector("#ovCardHigh")
+    ?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "HIGH" }));
+  root
+    .querySelector("#ovCardMedium")
+    ?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "MEDIUM" }));
+  root
+    .querySelector("#ovCardLow")
+    ?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "LOW" }));
+  root
+    .querySelector("#ovCardCritical")
+    ?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "CRITICAL" }));
   syncStopButtons();
 }

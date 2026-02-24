@@ -22,7 +22,6 @@ import { renderScanDetailPage } from "./views/scan-detail.js";
 import { renderScans } from "./views/scans.js";
 import { renderVulnerabilities } from "./views/vulnerabilities.js";
 
-
 /* ---- SSE / Events ---- */
 
 export function pushEvent(evt) {
@@ -1245,7 +1244,13 @@ export async function refreshVulnerabilities() {
       state.vulnerabilitiesPage = Number(res.page || state.vulnerabilitiesPage || 1);
       state.vulnerabilitiesPageSize = Number(res.page_size || state.vulnerabilitiesPageSize || 50);
       state.vulnerabilitiesFacets = res.facets || { severities: [], kinds: [], scanners: [], repos: [], cves: [] };
-      state.vulnerabilitiesSeverityTotals = res.severity_totals || { critical: 0, high: 0, medium: 0, low: 0, fixed: 0 };
+      state.vulnerabilitiesSeverityTotals = res.severity_totals || {
+        critical: 0,
+        high: 0,
+        medium: 0,
+        low: 0,
+        fixed: 0,
+      };
     } else {
       state.vulnerabilities = [];
       state.vulnerabilitiesTotal = 0;
@@ -1262,8 +1267,8 @@ export async function refreshVulnerabilities() {
       if (f.status && f.status !== "open") urlParams.status = f.status;
       const p2 = new URLSearchParams(urlParams);
       if (Array.isArray(f.cves) && f.cves.length) f.cves.forEach((c) => p2.append("cves", c));
-      const qs = p2.toString() ? "?" + p2.toString() : "";
-      const newPath = "/ui/vulnerabilities" + qs;
+      const qs = p2.toString() ? `?${p2.toString()}` : "";
+      const newPath = `/ui/vulnerabilities${qs}`;
       if (window.location.pathname + window.location.search !== newPath) {
         history.replaceState({ view: "vulnerabilities" }, "", newPath);
       }
@@ -1278,7 +1283,10 @@ export async function refreshVulnerabilities() {
 
 export function applyVulnerabilitiesUrlParams(urlParams) {
   const cves = urlParams.getAll("cves").concat(
-    (urlParams.get("cve") || "").split(",").map((s) => s.trim()).filter(Boolean)
+    (urlParams.get("cve") || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
   );
   state.vulnerabilitiesFilters = {
     severity: urlParams.get("severity") || "",

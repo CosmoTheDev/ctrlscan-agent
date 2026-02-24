@@ -504,7 +504,12 @@ func applyDependencyBump(ctx context.Context, repoPath string, hints aiPkg.Apply
 }
 
 func runCmd(ctx context.Context, dir, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+	switch name {
+	case "go", "npm":
+	default:
+		return fmt.Errorf("runCmd: disallowed command %q", name)
+	}
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

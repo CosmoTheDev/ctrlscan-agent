@@ -1,6 +1,6 @@
 // Circular imports — all usages are inside function bodies.
 import { handleFixAction, openScanDetailPage, refreshVulnerabilities } from "../actions.js";
-import { setView, viewToPath } from "../router.js";
+import { setView } from "../router.js";
 import { state } from "../state.js";
 import { escapeHtml, setHtml, severityBucket } from "../utils.js";
 
@@ -94,18 +94,22 @@ function renderFiltersBar() {
   // Kind options from facets
   const availKinds = new Set(facets.kinds || []);
   const kindMap = { sca: "SCA (Dependencies)", sast: "SAST (Code)", secrets: "Secrets", iac: "IaC" };
-  const kindOptions = Object.entries(kindMap).map(([v, label]) => {
-    const avail = availKinds.size === 0 || availKinds.has(v);
-    return `<option value="${v}" ${f.kind === v ? "selected" : ""} ${!avail && f.kind !== v ? "style='opacity:0.4'" : ""}>${label}</option>`;
-  }).join("");
+  const kindOptions = Object.entries(kindMap)
+    .map(([v, label]) => {
+      const avail = availKinds.size === 0 || availKinds.has(v);
+      return `<option value="${v}" ${f.kind === v ? "selected" : ""} ${!avail && f.kind !== v ? "style='opacity:0.4'" : ""}>${label}</option>`;
+    })
+    .join("");
 
   // Scanner options from facets
   const availScanners = new Set(facets.scanners || []);
   const scannerNames = ["grype", "opengrep", "trufflehog", "trivy"];
-  const scannerOptions = scannerNames.map((v) => {
-    const avail = availScanners.size === 0 || availScanners.has(v);
-    return `<option value="${v}" ${f.scanner === v ? "selected" : ""} ${!avail && f.scanner !== v ? "style='opacity:0.4'" : ""}>${v}</option>`;
-  }).join("");
+  const scannerOptions = scannerNames
+    .map((v) => {
+      const avail = availScanners.size === 0 || availScanners.has(v);
+      return `<option value="${v}" ${f.scanner === v ? "selected" : ""} ${!avail && f.scanner !== v ? "style='opacity:0.4'" : ""}>${v}</option>`;
+    })
+    .join("");
 
   // Repo combobox — datalist from facets
   const repoListId = "vulnRepoDatalist";
@@ -279,7 +283,10 @@ export function renderVulnerabilities() {
   // Restore scroll
   if (savedScroll) {
     const tw = root.querySelector("[data-preserve-scroll-key='vuln-table']");
-    if (tw) { tw.scrollTop = savedScroll.top; tw.scrollLeft = savedScroll.left; }
+    if (tw) {
+      tw.scrollTop = savedScroll.top;
+      tw.scrollLeft = savedScroll.left;
+    }
   }
 
   _wireVulnerabilities(root);
@@ -402,10 +409,26 @@ function _wireVulnerabilities(root) {
   });
 
   // Pagination
-  root.querySelector("#vulnPageFirst")?.addEventListener("click", () => { state.vulnerabilitiesPage = 1; refreshVulnerabilities(); });
-  root.querySelector("#vulnPagePrev")?.addEventListener("click", () => { if (state.vulnerabilitiesPage > 1) { state.vulnerabilitiesPage--; refreshVulnerabilities(); } });
-  root.querySelector("#vulnPageNext")?.addEventListener("click", () => { if (state.vulnerabilitiesPage < state.vulnerabilitiesTotalPages) { state.vulnerabilitiesPage++; refreshVulnerabilities(); } });
-  root.querySelector("#vulnPageLast")?.addEventListener("click", () => { state.vulnerabilitiesPage = state.vulnerabilitiesTotalPages; refreshVulnerabilities(); });
+  root.querySelector("#vulnPageFirst")?.addEventListener("click", () => {
+    state.vulnerabilitiesPage = 1;
+    refreshVulnerabilities();
+  });
+  root.querySelector("#vulnPagePrev")?.addEventListener("click", () => {
+    if (state.vulnerabilitiesPage > 1) {
+      state.vulnerabilitiesPage--;
+      refreshVulnerabilities();
+    }
+  });
+  root.querySelector("#vulnPageNext")?.addEventListener("click", () => {
+    if (state.vulnerabilitiesPage < state.vulnerabilitiesTotalPages) {
+      state.vulnerabilitiesPage++;
+      refreshVulnerabilities();
+    }
+  });
+  root.querySelector("#vulnPageLast")?.addEventListener("click", () => {
+    state.vulnerabilitiesPage = state.vulnerabilitiesTotalPages;
+    refreshVulnerabilities();
+  });
 
   // Export CSV
   root.querySelector("#vulnExportCSV")?.addEventListener("click", _exportCSV);
@@ -448,13 +471,35 @@ async function _exportCSV() {
     if (Array.isArray(f.cves)) f.cves.forEach((c) => params.append("cves", c));
     const res = await api(`/api/vulnerabilities?${params.toString()}`);
     const items = Array.isArray(res?.items) ? res.items : [];
-    if (!items.length) { showToast({ message: "No data to export.", kind: "warn" }); return; }
+    if (!items.length) {
+      showToast({ message: "No data to export.", kind: "warn" });
+      return;
+    }
 
-    const cols = ["id", "scan_job_id", "severity", "kind", "scanner", "owner", "repo", "branch", "title", "file_path", "line", "message", "package", "version", "status", "first_seen", "fix_status", "fix_pr_url"];
-    const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const cols = [
+      "id",
+      "scan_job_id",
+      "severity",
+      "kind",
+      "scanner",
+      "owner",
+      "repo",
+      "branch",
+      "title",
+      "file_path",
+      "line",
+      "message",
+      "package",
+      "version",
+      "status",
+      "first_seen",
+      "fix_status",
+      "fix_pr_url",
+    ];
+    const csvEscape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const lines = [cols.join(",")];
     for (const row of items) {
-      lines.push(cols.map((c) => escape(row[c] ?? "")).join(","));
+      lines.push(cols.map((c) => csvEscape(row[c] ?? "")).join(","));
     }
     const blob = new Blob([lines.join("\r\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -463,7 +508,10 @@ async function _exportCSV() {
     a.download = `vulnerabilities-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
-    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 1000);
     showToast({ message: `Exported ${items.length} rows as CSV.`, kind: "success" });
   } catch (err) {
     const { showToast: st } = await import("../toast.js");
@@ -484,8 +532,8 @@ export function openVulnerabilitiesWithFilters(filters = {}) {
   if (newFilters.repo) p.set("repo", newFilters.repo);
   if (newFilters.q) p.set("q", newFilters.q);
   if (newFilters.status && newFilters.status !== "open") p.set("status", newFilters.status);
-  const qs = p.toString() ? "?" + p.toString() : "";
-  history.pushState({ view: "vulnerabilities" }, "", "/ui/vulnerabilities" + qs);
+  const qs = p.toString() ? `?${p.toString()}` : "";
+  history.pushState({ view: "vulnerabilities" }, "", `/ui/vulnerabilities${qs}`);
   setView("vulnerabilities", {});
   refreshVulnerabilities();
 }

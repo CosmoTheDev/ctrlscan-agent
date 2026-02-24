@@ -56,7 +56,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		} else {
 			fmt.Printf("OK (%s: %s)\n", db.Driver(), cfg.Database.Path)
 		}
-		db.Close()
+		_ = db.Close()
 	}
 
 	// Check AI config

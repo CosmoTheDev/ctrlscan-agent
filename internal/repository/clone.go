@@ -68,7 +68,7 @@ func (cm *CloneManager) Clone(ctx context.Context, repoURL, token, branch string
 
 	repo, err := gogit.PlainCloneContext(ctx, tmpDir, false, cloneOpts)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir) // best-effort cleanup on clone failure
 		return nil, fmt.Errorf("cloning %s: %w", repoURL, err)
 	}
 

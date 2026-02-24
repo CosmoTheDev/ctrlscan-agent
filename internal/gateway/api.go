@@ -3025,6 +3025,7 @@ func (gw *Gateway) handleListVulnerabilities(w http.ResponseWriter, r *http.Requ
 	var cnt countRow
 	countArgs := make([]any, len(args))
 	copy(countArgs, args)
+	// nosemgrep: go.lang.security.injection.tainted-sql-string.tainted-sql-string — whereStr is built with parameterized placeholders only; values are in args.
 	if err := gw.db.Get(ctx, &cnt, "SELECT COUNT(*) AS n"+vulnFromJoinsNoFix+whereStr, countArgs...); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"items": []vulnRow{}, "total": 0, "page": pg.Page, "page_size": pg.PageSize, "total_pages": 1,
@@ -3036,6 +3037,7 @@ func (gw *Gateway) handleListVulnerabilities(w http.ResponseWriter, r *http.Requ
 
 	pagedArgs := append(args, pg.PageSize, pg.Offset)
 	var rows []vulnRow
+	// nosemgrep: go.lang.security.injection.tainted-sql-string.tainted-sql-string — whereStr contains only parameterized placeholders; values are in pagedArgs.
 	selectQ := `SELECT sjf.id, sjf.scan_job_id, sjf.kind, sjf.scanner, sjf.severity, sjf.title,
 		sjf.file_path, sjf.line, sjf.message, sjf.package_name, sjf.package_version,
 		sjf.fix_hint, sjf.status, sjf.first_seen_at,
@@ -3056,7 +3058,7 @@ func (gw *Gateway) handleListVulnerabilities(w http.ResponseWriter, r *http.Requ
 		N   int    `db:"n"`
 	}
 	var sevRows []sevRow
-	_ = gw.db.Select(ctx, &sevRows, "SELECT UPPER(sjf.severity) AS sev, COUNT(*) AS n"+vulnFromJoinsNoFix+sevWhere+" GROUP BY sjf.severity", sevArgs...)
+	_ = gw.db.Select(ctx, &sevRows, "SELECT UPPER(sjf.severity) AS sev, COUNT(*) AS n"+vulnFromJoinsNoFix+sevWhere+" GROUP BY sjf.severity", sevArgs...) // nosemgrep: go.lang.security.injection.tainted-sql-string.tainted-sql-string
 	sevTotals := map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0, "fixed": 0}
 	for _, sr := range sevRows {
 		switch sr.Sev {
@@ -3079,7 +3081,7 @@ func (gw *Gateway) handleListVulnerabilities(w http.ResponseWriter, r *http.Requ
 		fixedWhere2 = " WHERE sjf.status = 'fixed'"
 	}
 	var fixedCnt countRow
-	_ = gw.db.Get(ctx, &fixedCnt, "SELECT COUNT(*) AS n"+vulnFromJoinsNoFix+fixedWhere2, fixedArgs...)
+	_ = gw.db.Get(ctx, &fixedCnt, "SELECT COUNT(*) AS n"+vulnFromJoinsNoFix+fixedWhere2, fixedArgs...) // nosemgrep: go.lang.security.injection.tainted-sql-string.tainted-sql-string
 	sevTotals["fixed"] = fixedCnt.N
 
 	// Cascading facets — each dimension computed without its own filter

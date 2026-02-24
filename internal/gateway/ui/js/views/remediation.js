@@ -32,7 +32,6 @@ function restorePreservedScroll(root, saved) {
   });
 }
 
-
 function getScannedRepoLabel(r) {
   const owner = String(r?.owner || "").trim();
   const repo = String(r?.repo || "").trim();

@@ -35,8 +35,8 @@ export function viewToPath(id, opts = {}) {
     case "scans":
       return "/ui/scans";
     case "vulnerabilities": {
-      const params = opts.params ? "?" + new URLSearchParams(opts.params).toString() : "";
-      return "/ui/vulnerabilities" + params;
+      const params = opts.params ? `?${new URLSearchParams(opts.params).toString()}` : "";
+      return `/ui/vulnerabilities${params}`;
     }
     case "remediation":
       return "/ui/remediation";

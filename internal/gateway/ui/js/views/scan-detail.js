@@ -95,7 +95,6 @@ function restorePreservedFocus(root, saved) {
   } catch (_) {}
 }
 
-
 function formatAIOrigin(r) {
   const provider = String(r?.ai_provider || "").trim();
   const model = String(r?.ai_model || "").trim();
@@ -153,7 +152,17 @@ function getScanDetailFixesViewModel() {
     const status = String(f.status || "").toLowerCase();
     if (fixStatusFilter && status !== fixStatusFilter) return false;
     if (!fixSearch) return true;
-    const hay = [f.id, f.finding_type, f.status, f.pr_title, f.pr_url, f.pr_body, f.ai_provider, f.ai_model, f.ai_endpoint]
+    const hay = [
+      f.id,
+      f.finding_type,
+      f.status,
+      f.pr_title,
+      f.pr_url,
+      f.pr_body,
+      f.ai_provider,
+      f.ai_model,
+      f.ai_endpoint,
+    ]
       .map((v) => String(v || ""))
       .join(" ")
       .toLowerCase();
@@ -227,8 +236,7 @@ function renderScanDetailFixesCardHtml() {
             </td>
           </tr>`
               )
-              .join("") ||
-            `<tr><td colspan="7" class="muted">No AI-generated fixes queued for this scan yet.</td></tr>`
+              .join("") || `<tr><td colspan="7" class="muted">No AI-generated fixes queued for this scan yet.</td></tr>`
           }
         </tbody>
       </table>
@@ -246,7 +254,7 @@ function rerenderScanDetailFixesCard(root) {
   const preservedFocus = capturePreservedFocus(root);
   const viewportX = window.scrollX || 0;
   const viewportY = window.scrollY || 0;
-  card.outerHTML = renderScanDetailFixesCardHtml();
+  card.outerHTML = renderScanDetailFixesCardHtml(); // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method -- all user data is escaped via escapeHtml()
   restorePreservedScroll(root, preservedScroll);
   restorePreservedDetailsOpen(root, { ...(state.scanDetailUiOpenDetails || {}), ...preservedOpen });
   restorePreservedFocus(root, preservedFocus);
@@ -645,7 +653,11 @@ export function renderScanDetailPage() {
     });
   });
   root.querySelector("#detailBackToScans")?.addEventListener("click", () => {
-    if (window.history.length > 1) { history.back(); } else { setView("scans", { pushHistory: true }); }
+    if (window.history.length > 1) {
+      history.back();
+    } else {
+      setView("scans", { pushHistory: true });
+    }
   });
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
     if (state.selectedJobId)

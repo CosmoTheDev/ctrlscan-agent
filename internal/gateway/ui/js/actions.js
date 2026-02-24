@@ -581,8 +581,13 @@ function readCronForm() {
   const root = document.getElementById("view-cron");
   if (!root) throw new Error("cron view not mounted");
   const editingId = Number(root.querySelector("#cronId")?.value || 0);
-  const name = root.querySelector("#cronName").value.trim();
-  const expr = root.querySelector("#cronExpr").value.trim();
+  const name = root.querySelector("#cronName")?.value?.trim() || "";
+  const exprPreset = root.querySelector("#cronExprPreset")?.value || "custom";
+  const exprEl = root.querySelector("#cronExpr");
+  if (exprPreset !== "custom" && exprEl) {
+    root.querySelector("#cronExprPreset")?.dispatchEvent(new Event("change"));
+  }
+  const expr = exprEl?.value?.trim() || "";
   const mode = root.querySelector("#cronMode").value.trim();
   const repoLines = parseCronMultiline(root.querySelector("#cronRepos").value);
   const ownerLines = parseCronMultiline(root.querySelector("#cronOwners").value);

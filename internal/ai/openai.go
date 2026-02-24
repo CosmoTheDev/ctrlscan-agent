@@ -124,31 +124,59 @@ Respond ONLY with valid JSON, no markdown code blocks.`, string(findingsJSON))
 
 // GenerateFix asks GPT to produce a unified diff patch for a single finding.
 func (o *OpenAIProvider) GenerateFix(ctx context.Context, req FixRequest) (*FixResult, error) {
-	reqJSON, _ := json.MarshalIndent(req, "", "  ")
+	// Build the file-content section of the prompt.
+	var fileSectionBuf strings.Builder
+	if req.FileContent != "" {
+		fmt.Fprintf(&fileSectionBuf,
+			"Full file content (%s, %d lines total):\n```\n%s```\n",
+			req.FilePath, req.TotalLines, req.FileContent)
+	} else if req.CodeContext != "" {
+		fmt.Fprintf(&fileSectionBuf,
+			"Relevant excerpt from %s (line %d is marked >>):\n```\n%s```\n",
+			req.FilePath, req.Finding.LineNumber, req.CodeContext)
+	}
 
-	prompt := fmt.Sprintf(`You are a security engineer generating code fixes for vulnerabilities.
-Given the following finding and code context, produce a minimal, correct fix.
+	findingJSON, _ := json.MarshalIndent(req.Finding, "", "  ")
 
-Return a JSON object with:
-- "patch": a valid unified diff (--- a/file +++ b/file format) that fixes the vulnerability
-- "explanation": a concise explanation of what was changed and why
-- "confidence": a float from 0.0 to 1.0 indicating how confident you are the fix is correct
-- "apply_hints": object (optional but recommended) with:
-  - "target_files": array of expected files touched by the patch
-  - "apply_strategy": one of "git_apply", "edit_file_directly", "dependency_bump"
-  - "prerequisites": array of assumptions that must be true before applying
-  - "post_apply_checks": array of commands/checks a reviewer should run
-  - "fallback_patch_notes": brief notes if hunk offsets may fail
-  - "risk_notes": brief reviewer caution notes
+	prompt := fmt.Sprintf(`You are a security engineer generating minimal, correct code fixes.
 
-Finding and context:
+FINDING:
 %s
 
-Important:
-- The patch must be syntactically valid for the language
-- Make the minimal change necessary; do not refactor unrelated code
-- If you cannot generate a reliable fix, set confidence < 0.5 and explain why
-- Respond ONLY with valid JSON, no markdown code blocks`, string(reqJSON))
+FILE PATH: %s
+LANGUAGE: %s
+%s
+TASK: Produce a unified diff patch that fixes the vulnerability above.
+
+PATCH FORMAT RULES (critical — git apply will reject malformed patches):
+1. Header lines:
+     --- a/<filepath>
+     +++ b/<filepath>
+2. Hunk header MUST include real line numbers in this exact format:
+     @@ -<old_start>,<old_count> +<new_start>,<new_count> @@
+   Example for a 3-line context block where you add 1 line at line 42:
+     @@ -41,3 +41,4 @@
+      context_line_before
+     +your_added_line
+      context_line_after
+3. Context lines start with a single space. Added lines start with +. Removed lines start with -.
+4. Never emit bare "@@ @@" or "@@ " with no numbers.
+
+Return ONLY a JSON object — no markdown fences, no extra text:
+{
+  "patch": "<unified diff as described above>",
+  "explanation": "<concise explanation of the change>",
+  "confidence": <0.0–1.0>,
+  "apply_hints": {
+    "target_files": ["<repo-relative path>"],
+    "apply_strategy": "git_apply",
+    "post_apply_checks": ["<command to verify>"],
+    "risk_notes": "<any caveats>"
+  }
+}
+
+If you cannot produce a reliable patch, set confidence < 0.5 and leave "patch" empty.`,
+		string(findingJSON), req.FilePath, req.Language, fileSectionBuf.String())
 
 	resp, err := o.complete(ctx, prompt, 2048)
 	if err != nil {
@@ -161,7 +189,6 @@ Important:
 	result.Language = req.Language
 
 	if err := json.Unmarshal([]byte(resp), &result); err != nil {
-		// If JSON parsing fails, treat the response as the explanation.
 		result.Explanation = resp
 		result.Confidence = 0
 	}

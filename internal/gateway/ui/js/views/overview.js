@@ -4,6 +4,7 @@ import { openTriggerModal } from "../modals.js";
 import { setView } from "../router.js";
 import { state } from "../state.js";
 import { escapeHtml, fmtDate, setHtml, statusClass } from "../utils.js";
+import { openVulnerabilitiesWithFilters } from "./vulnerabilities.js";
 
 export function renderSweepSummaryCard() {
   const s = state.sweepUi?.latestSummary;
@@ -68,10 +69,10 @@ export function renderOverview() {
       <div class="card card-orange"><div class="metric-label">Pending Fixes</div><div class="metric-value">${st.pending_fixes ?? 0}</div></div>
     </div>
     <div class="grid cols-4" style="margin-top:12px">
-      <div class="card card-high"><div class="metric-label">High (Aggregate)</div><div class="metric-value high">${sum.high ?? 0}</div></div>
-      <div class="card card-medium"><div class="metric-label">Medium (Aggregate)</div><div class="metric-value medium">${sum.medium ?? 0}</div></div>
-      <div class="card card-low"><div class="metric-label">Low (Aggregate)</div><div class="metric-value low">${sum.low ?? 0}</div></div>
-      <div class="card card-critical"><div class="metric-label">Critical (Aggregate)</div><div class="metric-value critical">${sum.critical ?? 0}</div></div>
+      <div class="card card-high" id="ovCardHigh" style="cursor:pointer" title="View High severity vulnerabilities"><div class="metric-label">High (Aggregate)</div><div class="metric-value high">${sum.high ?? 0}</div></div>
+      <div class="card card-medium" id="ovCardMedium" style="cursor:pointer" title="View Medium severity vulnerabilities"><div class="metric-label">Medium (Aggregate)</div><div class="metric-value medium">${sum.medium ?? 0}</div></div>
+      <div class="card card-low" id="ovCardLow" style="cursor:pointer" title="View Low severity vulnerabilities"><div class="metric-label">Low (Aggregate)</div><div class="metric-value low">${sum.low ?? 0}</div></div>
+      <div class="card card-critical" id="ovCardCritical" style="cursor:pointer" title="View Critical severity vulnerabilities"><div class="metric-label">Critical (Aggregate)</div><div class="metric-value critical">${sum.critical ?? 0}</div></div>
     </div>
     <div class="grid cols-2" style="margin-top:14px">
       <div class="card">
@@ -119,5 +120,18 @@ export function renderOverview() {
   root.querySelector("#ovOpenLatestDetail")?.addEventListener("click", async () => {
     if (last) await openScanDetailPage(last.id);
   });
+  // Severity cards → vulnerabilities view with pre-set filter
+  root
+    .querySelector("#ovCardHigh")
+    ?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "HIGH" }));
+  root
+    .querySelector("#ovCardMedium")
+    ?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "MEDIUM" }));
+  root
+    .querySelector("#ovCardLow")
+    ?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "LOW" }));
+  root
+    .querySelector("#ovCardCritical")
+    ?.addEventListener("click", () => openVulnerabilitiesWithFilters({ severity: "CRITICAL" }));
   syncStopButtons();
 }

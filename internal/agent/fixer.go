@@ -767,9 +767,9 @@ func (f *FixerAgent) resolveFixCodeContextLines() int {
 		}
 	}
 	if f.cfg != nil && f.cfg.AI.OptimizeForLocal {
-		// Keep local prompts compact for smaller-context models while still giving
-		// nearby lines around the finding.
-		return 5
+		// Local models get a moderate window — wide enough to produce correct
+		// patch offsets but compact enough for smaller context windows.
+		return 30
 	}
 	return 10
 }
@@ -975,13 +975,29 @@ func remediationJobLogFields(job fixJob) []any {
 }
 
 func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.FindingSummary, job fixJob) fixAttemptOutcome {
-	// Read code context from the clone.
-	codeCtx := f.readCodeContext(job.RepoPath, finding.FilePath, finding.LineNumber, f.resolveFixCodeContextLines())
+	// SCA findings with a known fix version are better handled deterministically
+	// (npm install, go get, etc.) than via AI patch generation. Skip the AI
+	// round-trip and go straight to the dependency bump path.
+	if strings.EqualFold(strings.TrimSpace(finding.Type), "sca") &&
+		strings.TrimSpace(finding.FixVersion) != "" {
+		if f.queueDeterministicSCABumpFallback(ctx, finding, job, "sca_has_fix_version") {
+			return fixAttemptQueued
+		}
+		// No deterministic handler for this ecosystem — fall through to AI.
+	}
+
+	// Build code context. For small files return the full content; for larger
+	// files use a wide window around the finding line.
+	contextLines := f.resolveFixCodeContextLines()
+	fileContent, totalLines := f.readFileForFix(job.RepoPath, finding.FilePath)
+	codeCtx := f.readCodeContext(job.RepoPath, finding.FilePath, finding.LineNumber, contextLines)
 	lang := detectLanguage(finding.FilePath)
 
 	fixResult, err := f.ai.GenerateFix(ctx, aiPkg.FixRequest{
 		Finding:     finding,
 		CodeContext: codeCtx,
+		FileContent: fileContent,
+		TotalLines:  totalLines,
 		FilePath:    finding.FilePath,
 		Language:    lang,
 	})
@@ -1007,6 +1023,7 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 		}
 		return fixAttemptLowConf
 	}
+	fixResult.Patch = cleanPatch(fixResult.Patch)
 	if !looksLikeUnifiedDiffPatch(fixResult.Patch) {
 		args := append(remediationJobLogFields(job),
 			"finding_id", finding.ID,
@@ -2034,7 +2051,8 @@ func findPathLineInAnyMapForFixer(m map[string]any) (string, int) {
 	return path, line
 }
 
-// readCodeContext reads lines around lineNum from filePath.
+// readCodeContext reads lines around lineNum from filePath with line numbers.
+// contextLines controls the window on each side of the finding.
 func (f *FixerAgent) readCodeContext(repoPath, filePath string, lineNum, contextLines int) string {
 	if filePath == "" {
 		return ""
@@ -2045,6 +2063,19 @@ func (f *FixerAgent) readCodeContext(repoPath, filePath string, lineNum, context
 		return ""
 	}
 	lines := strings.Split(string(data), "\n")
+	// When the finding has no specific line number, return the full file
+	// (capped at 300 lines so the prompt stays manageable).
+	if lineNum <= 0 {
+		end := len(lines)
+		if end > 300 {
+			end = 300
+		}
+		var sb strings.Builder
+		for i := 0; i < end; i++ {
+			sb.WriteString(fmt.Sprintf("%4d | %s\n", i+1, lines[i]))
+		}
+		return sb.String()
+	}
 	start := lineNum - contextLines - 1
 	if start < 0 {
 		start = 0
@@ -2053,12 +2084,40 @@ func (f *FixerAgent) readCodeContext(repoPath, filePath string, lineNum, context
 	if end > len(lines) {
 		end = len(lines)
 	}
-
 	var sb strings.Builder
 	for i := start; i < end; i++ {
-		sb.WriteString(fmt.Sprintf("%4d | %s\n", i+1, lines[i]))
+		// Mark the exact finding line with ">>" so the model can locate it.
+		marker := "  "
+		if i+1 == lineNum {
+			marker = ">>"
+		}
+		sb.WriteString(fmt.Sprintf("%4d%s| %s\n", i+1, marker, lines[i]))
 	}
 	return sb.String()
+}
+
+// readFileForFix returns (fullContent, totalLines).
+// For files ≤ fullFileMaxLines it returns the entire content; for larger files
+// it returns an empty string so the caller falls back to readCodeContext.
+func (f *FixerAgent) readFileForFix(repoPath, filePath string) (string, int) {
+	const fullFileMaxLines = 300
+	if filePath == "" {
+		return "", 0
+	}
+	data, err := os.ReadFile(filepath.Join(repoPath, filePath))
+	if err != nil {
+		return "", 0
+	}
+	lines := strings.Split(string(data), "\n")
+	total := len(lines)
+	if total > fullFileMaxLines {
+		return "", total
+	}
+	var sb strings.Builder
+	for i, l := range lines {
+		sb.WriteString(fmt.Sprintf("%4d | %s\n", i+1, l))
+	}
+	return sb.String(), total
 }
 
 // detectLanguage guesses the programming language from a file extension.

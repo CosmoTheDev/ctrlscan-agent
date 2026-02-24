@@ -80,6 +80,8 @@ function formatProgress(r) {
 export function renderRemediation() {
   const root = document.getElementById("view-remediation");
   if (!root) return;
+  const rootScrollTop = Number(root.scrollTop || 0);
+  const rootScrollLeft = Number(root.scrollLeft || 0);
   const preservedScroll = capturePreservedScroll(root);
   const campaigns = state.remediationCampaigns || [];
   const draft = state.remediationDraft || {};
@@ -239,6 +241,8 @@ export function renderRemediation() {
   `
   );
   restorePreservedScroll(root, preservedScroll);
+  root.scrollTop = rootScrollTop;
+  root.scrollLeft = rootScrollLeft;
 
   root.querySelector("#remRefresh")?.addEventListener("click", refreshRemediation);
   root.querySelector("#remCreate")?.addEventListener("click", createRemediationCampaign);

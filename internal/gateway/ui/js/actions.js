@@ -20,6 +20,7 @@ import { renderHealthPill, renderOverview } from "./views/overview.js";
 import { renderRemediation } from "./views/remediation.js";
 import { renderScanDetailPage } from "./views/scan-detail.js";
 import { renderScans } from "./views/scans.js";
+import { renderVulnerabilities } from "./views/vulnerabilities.js";
 
 /* ---- SSE / Events ---- */
 
@@ -95,7 +96,11 @@ export function scheduleLiveRefresh(opts = {}) {
       if (pending.remediation || state.view === "remediation") tasks.push(refreshRemediation());
       if (tasks.length > 0) await Promise.all(tasks);
       if (pending.detail && state.selectedJobId) {
-        await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
+        await selectJob(state.selectedJobId, {
+          preserveFindingsState: true,
+          preserveFixesState: true,
+          preserveRemediationState: true,
+        });
       }
     } catch (_) {
       // best-effort live refresh; status stream continues even if this fails
@@ -163,11 +168,28 @@ function reconcileSelectedJobs() {
   state.selectedScanJobIds = next;
 }
 
+export async function refreshScansRepos() {
+  try {
+    const res = await api("/api/jobs/repos?page_size=500");
+    const items = Array.isArray(res?.items) ? res.items : Array.isArray(res) ? res : [];
+    state.scansRepoSuggestions = items.map((r) => `${r.owner}/${r.repo}`);
+    state.scansRepoSuggestionsLoaded = true;
+  } catch (_) {}
+}
+
 export async function refreshJobs() {
   state.scansLoading = true;
   renderScans();
   try {
-    const jobsRes = await api(`/api/jobs?page=${state.scansPage || 1}&page_size=${state.scansPageSize || 20}`);
+    const f = state.scansFilters || {};
+    const params = new URLSearchParams();
+    params.set("page", String(state.scansPage || 1));
+    params.set("page_size", String(state.scansPageSize || 20));
+    if (f.status) params.set("status", f.status);
+    if (f.minHigh) params.set("min_high", f.minHigh);
+    if (f.minMedium) params.set("min_medium", f.minMedium);
+    for (const r of f.repos || []) params.append("repo", r);
+    const jobsRes = await api(`/api/jobs?${params.toString()}`);
     if (jobsRes && Array.isArray(jobsRes.items)) {
       state.jobs = jobsRes.items;
       state.jobsTotal = Number(jobsRes.total || 0);
@@ -270,12 +292,9 @@ export async function selectJob(id, opts = {}) {
   const switchingJobs = Number(state.selectedJobId || 0) !== Number(id || 0);
   const hasExistingDetail = !!state.selectedJob;
   const shouldShowInlineLoading = switchingJobs || !hasExistingDetail;
-  const shouldShowBackgroundSync = !shouldShowInlineLoading;
   if (showLoading) showGlobalLoading("Loading scan detail…");
   state.selectedJobLoading = shouldShowInlineLoading;
-  state.selectedJobSyncing = shouldShowBackgroundSync;
   if (state.view === "scan-detail" && shouldShowInlineLoading) renderScanDetailPage();
-  if (state.view === "scan-detail" && shouldShowBackgroundSync) renderScanDetailPage();
   state.selectedJobId = id;
   if (!opts.preserveFindingsState) {
     state.scanDetailFindingsPage = 1;
@@ -286,6 +305,7 @@ export async function selectJob(id, opts = {}) {
     state.scanDetailFixesPage = 1;
     state.scanDetailFixesSearch = "";
     state.scanDetailFixesStatus = "";
+    state.scanDetailUiOpenDetails = {};
   }
   if (!opts.preserveRemediationState) {
     state.selectedJobRemediationRunsPage = 1;
@@ -299,10 +319,8 @@ export async function selectJob(id, opts = {}) {
     state.selectedJobFixes = await api(`/api/jobs/${id}/fixes`);
     await loadSelectedJobRemediationRuns();
     renderScans();
-    if (state.view === "scan-detail") renderScanDetailPage();
   } finally {
     state.selectedJobLoading = false;
-    state.selectedJobSyncing = false;
     if (state.view === "scan-detail") renderScanDetailPage();
     if (showLoading) hideGlobalLoading();
   }
@@ -323,6 +341,7 @@ export function clearSelectedJob() {
   state.scanDetailFixesPage = 1;
   state.scanDetailFixesSearch = "";
   state.scanDetailFixesStatus = "";
+  state.scanDetailUiOpenDetails = {};
   state.selectedJobRemediationRuns = [];
   state.selectedJobRemediationRunsTotal = 0;
   state.selectedJobRemediationRunsPage = 1;
@@ -331,7 +350,6 @@ export function clearSelectedJob() {
   state.scanDetailFindingsPage = 1;
   state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "", title: "", path: "", q: "" };
   state.scanDetailFindingsDraft = { title: "", path: "", q: "" };
-  state.selectedJobSyncing = false;
 }
 
 export async function deleteOneScanJob(id) {
@@ -581,8 +599,13 @@ function readCronForm() {
   const root = document.getElementById("view-cron");
   if (!root) throw new Error("cron view not mounted");
   const editingId = Number(root.querySelector("#cronId")?.value || 0);
-  const name = root.querySelector("#cronName").value.trim();
-  const expr = root.querySelector("#cronExpr").value.trim();
+  const name = root.querySelector("#cronName")?.value?.trim() || "";
+  const exprPreset = root.querySelector("#cronExprPreset")?.value || "custom";
+  const exprEl = root.querySelector("#cronExpr");
+  if (exprPreset !== "custom" && exprEl) {
+    root.querySelector("#cronExprPreset")?.dispatchEvent(new Event("change"));
+  }
+  const expr = exprEl?.value?.trim() || "";
   const mode = root.querySelector("#cronMode").value.trim();
   const repoLines = parseCronMultiline(root.querySelector("#cronRepos").value);
   const ownerLines = parseCronMultiline(root.querySelector("#cronOwners").value);
@@ -844,7 +867,11 @@ export async function handleFixAction(id, action) {
     if (!path) return;
     await api(path, { method: "POST", body: "{}" });
     if (state.selectedJobId) {
-      await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
+      await selectJob(state.selectedJobId, {
+        preserveFindingsState: true,
+        preserveFixesState: true,
+        preserveRemediationState: true,
+      });
     } else {
       await refreshJobs();
     }
@@ -1050,7 +1077,11 @@ export async function launchReviewCampaignForSelectedScan() {
     if (state.selectedJobId === job.id) {
       setTimeout(async () => {
         try {
-          await selectJob(job.id, { preserveFindingsState: true, preserveRemediationState: true });
+          await selectJob(job.id, {
+            preserveFindingsState: true,
+            preserveFixesState: true,
+            preserveRemediationState: true,
+          });
         } catch (_) {}
       }, 1500);
     }
@@ -1186,6 +1217,89 @@ export async function refreshConfig() {
   renderConfig();
 }
 
+/* ---- Vulnerabilities ---- */
+
+export async function refreshVulnerabilities() {
+  state.vulnerabilitiesLoading = true;
+  renderVulnerabilities();
+  try {
+    const f = state.vulnerabilitiesFilters || {};
+    const params = new URLSearchParams();
+    params.set("page", String(state.vulnerabilitiesPage || 1));
+    params.set("page_size", String(state.vulnerabilitiesPageSize || 50));
+    if (f.severity) params.set("severity", f.severity);
+    if (f.kind) params.set("kind", f.kind);
+    if (f.scanner) params.set("scanner", f.scanner);
+    if (f.status) params.set("status", f.status);
+    if (f.repo) params.set("repo", f.repo);
+    if (f.q) params.set("q", f.q);
+    if (Array.isArray(f.cves) && f.cves.length) {
+      for (const c of f.cves) params.append("cves", c);
+    }
+    const res = await api(`/api/vulnerabilities?${params.toString()}`);
+    if (res && Array.isArray(res.items)) {
+      state.vulnerabilities = res.items;
+      state.vulnerabilitiesTotal = Number(res.total || 0);
+      state.vulnerabilitiesTotalPages = Number(res.total_pages || 1);
+      state.vulnerabilitiesPage = Number(res.page || state.vulnerabilitiesPage || 1);
+      state.vulnerabilitiesPageSize = Number(res.page_size || state.vulnerabilitiesPageSize || 50);
+      state.vulnerabilitiesFacets = res.facets || { severities: [], kinds: [], scanners: [], repos: [], cves: [] };
+      state.vulnerabilitiesSeverityTotals = res.severity_totals || {
+        critical: 0,
+        high: 0,
+        medium: 0,
+        low: 0,
+        fixed: 0,
+      };
+    } else {
+      state.vulnerabilities = [];
+      state.vulnerabilitiesTotal = 0;
+      state.vulnerabilitiesTotalPages = 1;
+    }
+    // Sync URL params for shareability
+    if (state.view === "vulnerabilities") {
+      const urlParams = {};
+      if (f.severity) urlParams.severity = f.severity;
+      if (f.kind) urlParams.kind = f.kind;
+      if (f.scanner) urlParams.scanner = f.scanner;
+      if (f.repo) urlParams.repo = f.repo;
+      if (f.q) urlParams.q = f.q;
+      if (f.status && f.status !== "open") urlParams.status = f.status;
+      const p2 = new URLSearchParams(urlParams);
+      if (Array.isArray(f.cves) && f.cves.length) f.cves.forEach((c) => p2.append("cves", c));
+      const qs = p2.toString() ? `?${p2.toString()}` : "";
+      const newPath = `/ui/vulnerabilities${qs}`;
+      if (window.location.pathname + window.location.search !== newPath) {
+        history.replaceState({ view: "vulnerabilities" }, "", newPath);
+      }
+    }
+  } catch (err) {
+    showToast({ message: `Vulnerabilities load failed: ${err.message}`, kind: "error" });
+  } finally {
+    state.vulnerabilitiesLoading = false;
+    renderVulnerabilities();
+  }
+}
+
+export function applyVulnerabilitiesUrlParams(urlParams) {
+  const cves = urlParams.getAll("cves").concat(
+    (urlParams.get("cve") || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+  state.vulnerabilitiesFilters = {
+    severity: urlParams.get("severity") || "",
+    kind: urlParams.get("kind") || "",
+    scanner: urlParams.get("scanner") || "",
+    repo: urlParams.get("repo") || "",
+    q: urlParams.get("q") || "",
+    status: urlParams.get("status") || "open",
+    cves: [...new Set(cves)],
+  };
+  state.vulnerabilitiesPage = Number(urlParams.get("page") || 1);
+}
+
 /* ---- Refresh All ---- */
 
 export async function refreshAll() {
@@ -1203,7 +1317,11 @@ export async function refreshAll() {
       refreshRemediation(),
     ]);
     if (state.selectedJobId) {
-      await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
+      await selectJob(state.selectedJobId, {
+        preserveFindingsState: true,
+        preserveFixesState: true,
+        preserveRemediationState: true,
+      });
     }
     if (state.view === "config") {
       await refreshConfig();
@@ -1220,6 +1338,7 @@ export async function refreshAll() {
   renderOverview();
   renderScans();
   renderScanDetailPage();
+  renderVulnerabilities();
   renderCron();
   renderAgents();
   renderEvents();

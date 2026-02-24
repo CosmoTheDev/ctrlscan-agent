@@ -41,6 +41,60 @@ function restorePreservedScroll(root, saved) {
   });
 }
 
+function capturePreservedDetailsOpen(root) {
+  if (!root) return {};
+  const saved = {};
+  root.querySelectorAll("[data-preserve-open-key]").forEach((el) => {
+    const key = String(el.getAttribute("data-preserve-open-key") || "").trim();
+    if (!key) return;
+    saved[key] = !!el.open;
+  });
+  return saved;
+}
+
+function restorePreservedDetailsOpen(root, saved) {
+  if (!root || !saved) return;
+  root.querySelectorAll("[data-preserve-open-key]").forEach((el) => {
+    const key = String(el.getAttribute("data-preserve-open-key") || "").trim();
+    if (!key || !(key in saved)) return;
+    el.open = !!saved[key];
+  });
+}
+
+function capturePreservedFocus(root) {
+  if (!root) return null;
+  const active = document.activeElement;
+  if (!active || !root.contains(active)) return null;
+  const id = String(active.id || "").trim();
+  if (!id) return null;
+  const out = { id, selectionStart: null, selectionEnd: null };
+  try {
+    if (typeof active.selectionStart === "number" && typeof active.selectionEnd === "number") {
+      out.selectionStart = active.selectionStart;
+      out.selectionEnd = active.selectionEnd;
+    }
+  } catch (_) {}
+  return out;
+}
+
+function restorePreservedFocus(root, saved) {
+  if (!root || !saved?.id) return;
+  const el = root.querySelector(`#${saved.id}`);
+  if (!el) return;
+  try {
+    el.focus({ preventScroll: true });
+  } catch (_) {
+    try {
+      el.focus();
+    } catch (_) {}
+  }
+  try {
+    if (typeof el.setSelectionRange === "function" && saved.selectionStart != null && saved.selectionEnd != null) {
+      el.setSelectionRange(saved.selectionStart, saved.selectionEnd);
+    }
+  } catch (_) {}
+}
+
 function formatAIOrigin(r) {
   const provider = String(r?.ai_provider || "").trim();
   const model = String(r?.ai_model || "").trim();
@@ -86,9 +140,177 @@ function summarizeApplyHints(raw) {
   }
 }
 
+function getScanDetailFixesViewModel() {
+  const fixes = state.selectedJobFixes || [];
+  const fixSearch = String(state.scanDetailFixesSearch || "")
+    .trim()
+    .toLowerCase();
+  const fixStatusFilter = String(state.scanDetailFixesStatus || "")
+    .trim()
+    .toLowerCase();
+  const filteredFixes = fixes.filter((f) => {
+    const status = String(f.status || "").toLowerCase();
+    if (fixStatusFilter && status !== fixStatusFilter) return false;
+    if (!fixSearch) return true;
+    const hay = [
+      f.id,
+      f.finding_type,
+      f.status,
+      f.pr_title,
+      f.pr_url,
+      f.pr_body,
+      f.ai_provider,
+      f.ai_model,
+      f.ai_endpoint,
+    ]
+      .map((v) => String(v || ""))
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(fixSearch);
+  });
+  const fixPageSize = Math.max(1, Number(state.scanDetailFixesPageSize || 10));
+  const fixTotal = filteredFixes.length;
+  const fixTotalPages = Math.max(1, Math.ceil(fixTotal / fixPageSize));
+  const fixPage = Math.min(Math.max(1, Number(state.scanDetailFixesPage || 1)), fixTotalPages);
+  state.scanDetailFixesPage = fixPage;
+  const fixStart = (fixPage - 1) * fixPageSize;
+  const visibleFixes = filteredFixes.slice(fixStart, fixStart + fixPageSize);
+  const fixStatusOptions = [...new Set(fixes.map((f) => String(f.status || "").trim()).filter(Boolean))].sort();
+  return { fixPageSize, fixTotal, fixTotalPages, fixPage, fixStart, visibleFixes, fixStatusOptions };
+}
+
+function renderScanDetailFixesCardHtml() {
+  const { fixPageSize, fixTotal, fixTotalPages, fixPage, fixStart, visibleFixes, fixStatusOptions } =
+    getScanDetailFixesViewModel();
+  const fixActionBusyKey = String(state.fixActionBusyKey || "");
+  return `
+    <div id="scanDetailFixesCard" class="card" style="margin-top:10px; padding:10px 12px">
+      <div class="toolbar">
+        <input id="detailFixesSearch" placeholder="Search fixes / PR title / status / AI model..." value="${escapeHtml(state.scanDetailFixesSearch || "")}" style="min-width:260px">
+        <label style="width:auto">
+          <select id="detailFixesStatusFilter">
+            <option value="">All statuses</option>
+            ${fixStatusOptions.map((v) => `<option value="${escapeHtml(v)}" ${String(state.scanDetailFixesStatus || "") === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
+          </select>
+        </label>
+        <button id="detailFixesSearchClear" class="btn btn-secondary">Clear</button>
+        <span class="muted">Showing ${fixTotal === 0 ? 0 : fixStart + 1}-${Math.min(fixStart + fixPageSize, fixTotal)} of ${fixTotal}</span>
+        <button id="detailFixesPrev" class="btn btn-secondary" ${fixPage <= 1 ? "disabled" : ""}>Prev</button>
+        <button id="detailFixesNext" class="btn btn-secondary" ${fixPage >= fixTotalPages ? "disabled" : ""}>Next</button>
+      </div>
+      <div class="table-wrap" data-preserve-scroll-key="scan-detail:fixes-table">
+      <table>
+        <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>AI Model</th><th>PR Title</th><th>PR</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${
+            visibleFixes
+              .map(
+                (f) => `<tr>
+            <td>#${f.id}</td>
+            <td>${escapeHtml(f.finding_type)}</td>
+            <td><span class="${statusClass(f.status)}">${escapeHtml(f.status)}</span></td>
+            <td class="muted">${escapeHtml(formatAIOrigin(f))}</td>
+            <td>
+              <div>${escapeHtml(f.pr_title || "")}</div>
+              ${
+                String(f.apply_hints_json || "").trim()
+                  ? `<div class="muted" style="margin-top:4px">Hints: ${escapeHtml(summarizeApplyHints(f.apply_hints_json))}</div>
+                     <details data-preserve-open-key="scan-detail:fix-apply-hints-open:${Number(f.id || 0)}" style="margin-top:6px">
+                       <summary class="muted" style="cursor:pointer">View apply hints</summary>
+                       <pre class="code" data-preserve-scroll-key="scan-detail:fix-apply-hints:${Number(f.id || 0)}" style="margin-top:6px; white-space:pre-wrap; max-height:180px; overflow:auto">${escapeHtml(f.apply_hints_json)}</pre>
+                     </details>`
+                  : ""
+              }
+            </td>
+            <td>${f.pr_url ? `<a class="link" target="_blank" rel="noreferrer" href="${escapeHtml(f.pr_url)}">Open PR</a>` : `<span class="muted">n/a</span>`}</td>
+            <td class="row-actions">
+              ${
+                ["pending", "approved", "pr_failed"].includes(String(f.status || "").toLowerCase())
+                  ? `
+                ${String(f.status || "").toLowerCase() === "pending" ? `<button class="btn btn-secondary ${fixActionBusyKey === `approve:${f.id}` ? "is-loading" : ""}" data-fix-action="approve" data-fix-id="${f.id}" ${fixActionBusyKey ? "disabled" : ""}>Approve</button>` : ""}
+                <button class="btn btn-primary ${fixActionBusyKey === `approve-run:${f.id}` ? "is-loading" : ""}" data-fix-action="approve-run" data-fix-id="${f.id}" ${fixActionBusyKey ? "disabled" : ""}>${String(f.status || "").toLowerCase() === "pr_failed" ? "Retry Create PR" : String(f.status || "").toLowerCase() === "approved" ? "Create PR" : "Approve + Create PR"}</button>
+                ${String(f.status || "").toLowerCase() !== "pr_open" ? `<button class="btn btn-danger ${fixActionBusyKey === `reject:${f.id}` ? "is-loading" : ""}" data-fix-action="reject" data-fix-id="${f.id}" ${fixActionBusyKey ? "disabled" : ""}>Reject</button>` : ""}
+              `
+                  : `<span class="muted">-</span>`
+              }
+            </td>
+          </tr>`
+              )
+              .join("") || `<tr><td colspan="7" class="muted">No AI-generated fixes queued for this scan yet.</td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>
+    </div>
+  `;
+}
+
+function rerenderScanDetailFixesCard(root) {
+  if (!root) return;
+  const card = root.querySelector("#scanDetailFixesCard");
+  if (!card) return;
+  const preservedScroll = capturePreservedScroll(root);
+  const preservedOpen = capturePreservedDetailsOpen(root);
+  const preservedFocus = capturePreservedFocus(root);
+  const viewportX = window.scrollX || 0;
+  const viewportY = window.scrollY || 0;
+  card.outerHTML = renderScanDetailFixesCardHtml(); // nosemgrep: javascript.browser.security.insecure-document-method.insecure-document-method -- all user data is escaped via escapeHtml()
+  restorePreservedScroll(root, preservedScroll);
+  restorePreservedDetailsOpen(root, { ...(state.scanDetailUiOpenDetails || {}), ...preservedOpen });
+  restorePreservedFocus(root, preservedFocus);
+  try {
+    window.scrollTo(viewportX, viewportY);
+  } catch (_) {}
+  bindScanDetailFixesCard(root);
+}
+
+function bindScanDetailFixesCard(root) {
+  if (!root) return;
+  let fixesSearchTimer = null;
+  root.querySelector("#detailFixesSearch")?.addEventListener("input", (e) => {
+    state.scanDetailFixesSearch = e.target.value || "";
+    state.scanDetailFixesPage = 1;
+    if (fixesSearchTimer) clearTimeout(fixesSearchTimer);
+    fixesSearchTimer = setTimeout(() => {
+      rerenderScanDetailFixesCard(root);
+    }, 140);
+  });
+  root.querySelector("#detailFixesStatusFilter")?.addEventListener("change", (e) => {
+    state.scanDetailFixesStatus = e.target.value || "";
+    state.scanDetailFixesPage = 1;
+    rerenderScanDetailFixesCard(root);
+  });
+  root.querySelector("#detailFixesSearchClear")?.addEventListener("click", () => {
+    state.scanDetailFixesSearch = "";
+    state.scanDetailFixesStatus = "";
+    state.scanDetailFixesPage = 1;
+    rerenderScanDetailFixesCard(root);
+  });
+  root.querySelector("#detailFixesPrev")?.addEventListener("click", () => {
+    state.scanDetailFixesPage = Math.max(1, (state.scanDetailFixesPage || 1) - 1);
+    rerenderScanDetailFixesCard(root);
+  });
+  root.querySelector("#detailFixesNext")?.addEventListener("click", () => {
+    const { fixTotalPages } = getScanDetailFixesViewModel();
+    state.scanDetailFixesPage = Math.min(fixTotalPages, (state.scanDetailFixesPage || 1) + 1);
+    rerenderScanDetailFixesCard(root);
+  });
+  root.querySelectorAll("[data-fix-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.dataset.fixId);
+      const action = btn.dataset.fixAction;
+      await handleFixAction(id, action);
+    });
+  });
+}
+
 export function renderScanDetailPage() {
   const root = document.getElementById("view-scan-detail");
+  const rootScrollTop = Number(root?.scrollTop || 0);
+  const rootScrollLeft = Number(root?.scrollLeft || 0);
   const preservedScroll = capturePreservedScroll(root);
+  const preservedOpen = capturePreservedDetailsOpen(root);
+  const preservedFocus = capturePreservedFocus(root);
   if (state.selectedJobLoading) {
     setHtml(
       root,
@@ -158,42 +380,6 @@ export function renderScanDetailPage() {
   const kindOptions = Array.isArray(facets.kinds) ? facets.kinds : [];
   const scannerOptions = Array.isArray(facets.scanners) ? facets.scanners : [];
   const severityOptions = Array.isArray(facets.severities) ? facets.severities : [];
-  const fixes = state.selectedJobFixes || [];
-  const fixSearch = String(state.scanDetailFixesSearch || "")
-    .trim()
-    .toLowerCase();
-  const fixStatusFilter = String(state.scanDetailFixesStatus || "")
-    .trim()
-    .toLowerCase();
-  const filteredFixes = fixes.filter((f) => {
-    const status = String(f.status || "").toLowerCase();
-    if (fixStatusFilter && status !== fixStatusFilter) return false;
-    if (!fixSearch) return true;
-    const hay = [
-      f.id,
-      f.finding_type,
-      f.status,
-      f.pr_title,
-      f.pr_url,
-      f.pr_body,
-      f.apply_hints_json,
-      f.ai_provider,
-      f.ai_model,
-      f.ai_endpoint,
-    ]
-      .map((v) => String(v || ""))
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(fixSearch);
-  });
-  const fixPageSize = Math.max(1, Number(state.scanDetailFixesPageSize || 10));
-  const fixTotal = filteredFixes.length;
-  const fixTotalPages = Math.max(1, Math.ceil(fixTotal / fixPageSize));
-  const fixPage = Math.min(Math.max(1, Number(state.scanDetailFixesPage || 1)), fixTotalPages);
-  state.scanDetailFixesPage = fixPage;
-  const fixStart = (fixPage - 1) * fixPageSize;
-  const visibleFixes = filteredFixes.slice(fixStart, fixStart + fixPageSize);
-  const fixStatusOptions = [...new Set(fixes.map((f) => String(f.status || "").trim()).filter(Boolean))].sort();
   const remediationRuns = state.selectedJobRemediationRuns || [];
   const remediationRunsTotal = Number(state.selectedJobRemediationRunsTotal || remediationRuns.length || 0);
   const remediationRunsPage = Number(state.selectedJobRemediationRunsPage || 1);
@@ -212,8 +398,6 @@ export function renderScanDetailPage() {
   );
   const remediationForScanRunning = !!activeRemediationWorker;
   const commitHistory = state.selectedJobCommitHistory || [];
-  const fixActionBusyKey = String(state.fixActionBusyKey || "");
-  const detailSyncing = !!state.selectedJobSyncing;
   setHtml(
     root,
     `
@@ -223,12 +407,11 @@ export function renderScanDetailPage() {
           <div>
             <h3 style="margin-bottom:6px">Scan #${selectedJob.id} · ${escapeHtml(selectedJob.owner)}/${escapeHtml(selectedJob.repo)}</h3>
             <div class="muted">Branch ${escapeHtml(selectedJob.branch)} • Commit ${escapeHtml(selectedJob.commit_sha || "")} • ${escapeHtml(fmtDate(selectedJob.started_at))}</div>
-            ${detailSyncing ? `<div class="muted" style="margin-top:6px;display:flex;align-items:center;gap:8px"><span class="spinner-dot spinner-dot-accent" aria-hidden="true"></span>Syncing latest scan data…</div>` : ""}
             <div style="margin-top:8px"><span class="badge ${statusClass(selectedJob.status)}">${escapeHtml(selectedJob.status)}</span></div>
           </div>
           <div class="row-actions">
-            <button id="detailBackToScans" class="btn btn-secondary">Back To Scans</button>
-            <button id="detailRefresh" class="btn btn-secondary ${detailSyncing ? "is-loading" : ""}" ${detailSyncing ? "disabled" : ""}>${detailSyncing ? "Syncing" : "Refresh Detail"}</button>
+            <button id="detailBackToScans" class="btn btn-secondary">← Back</button>
+            <button id="detailRefresh" class="btn btn-secondary">Refresh Detail</button>
           </div>
         </div>
       </div>
@@ -448,65 +631,7 @@ export function renderScanDetailPage() {
             </div>
             <div class="footer-note">This history shows offline AI review campaign runs for this scan even when no fixes were queued (for example, if all fixes were skipped as low confidence).</div>
           </div>
-          <div class="card" style="margin-top:10px; padding:10px 12px">
-            <div class="toolbar">
-              <input id="detailFixesSearch" placeholder="Search fixes / PR title / status / AI model..." value="${escapeHtml(state.scanDetailFixesSearch || "")}" style="min-width:260px">
-              <label style="width:auto">
-                <select id="detailFixesStatusFilter">
-                  <option value="">All statuses</option>
-                  ${fixStatusOptions.map((v) => `<option value="${escapeHtml(v)}" ${String(state.scanDetailFixesStatus || "") === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}
-                </select>
-              </label>
-              <button id="detailFixesSearchClear" class="btn btn-secondary">Clear</button>
-              <span class="muted">Showing ${fixTotal === 0 ? 0 : fixStart + 1}-${Math.min(fixStart + fixPageSize, fixTotal)} of ${fixTotal}</span>
-              <button id="detailFixesPrev" class="btn btn-secondary" ${fixPage <= 1 ? "disabled" : ""}>Prev</button>
-              <button id="detailFixesNext" class="btn btn-secondary" ${fixPage >= fixTotalPages ? "disabled" : ""}>Next</button>
-            </div>
-            <div class="table-wrap" data-preserve-scroll-key="scan-detail:fixes-table">
-            <table>
-              <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>AI Model</th><th>PR Title</th><th>PR</th><th>Actions</th></tr></thead>
-              <tbody>
-                ${
-                  visibleFixes
-                    .map(
-                      (f) => `<tr>
-                  <td>#${f.id}</td>
-                  <td>${escapeHtml(f.finding_type)}</td>
-                  <td><span class="${statusClass(f.status)}">${escapeHtml(f.status)}</span></td>
-                  <td class="muted">${escapeHtml(formatAIOrigin(f))}</td>
-                  <td>
-                    <div>${escapeHtml(f.pr_title || "")}</div>
-                    ${
-                      String(f.apply_hints_json || "").trim()
-                        ? `<div class="muted" style="margin-top:4px">Hints: ${escapeHtml(summarizeApplyHints(f.apply_hints_json))}</div>
-                           <details style="margin-top:6px">
-                             <summary class="muted" style="cursor:pointer">View apply hints</summary>
-                             <pre class="code" data-preserve-scroll-key="scan-detail:fix-apply-hints:${Number(f.id || 0)}" style="margin-top:6px; white-space:pre-wrap; max-height:180px; overflow:auto">${escapeHtml(f.apply_hints_json)}</pre>
-                           </details>`
-                        : `<div class="muted" style="margin-top:4px">Hints: none</div>`
-                    }
-                  </td>
-                  <td>${f.pr_url ? `<a class="link" target="_blank" rel="noreferrer" href="${escapeHtml(f.pr_url)}">Open PR</a>` : `<span class="muted">n/a</span>`}</td>
-                  <td class="row-actions">
-                    ${
-                      ["pending", "approved", "pr_failed"].includes(String(f.status || "").toLowerCase())
-                        ? `
-                      ${String(f.status || "").toLowerCase() === "pending" ? `<button class="btn btn-secondary ${fixActionBusyKey === `approve:${f.id}` ? "is-loading" : ""}" data-fix-action="approve" data-fix-id="${f.id}" ${fixActionBusyKey ? "disabled" : ""}>Approve</button>` : ""}
-                      <button class="btn btn-primary ${fixActionBusyKey === `approve-run:${f.id}` ? "is-loading" : ""}" data-fix-action="approve-run" data-fix-id="${f.id}" ${fixActionBusyKey ? "disabled" : ""}>${String(f.status || "").toLowerCase() === "pr_failed" ? "Retry Create PR" : String(f.status || "").toLowerCase() === "approved" ? "Create PR" : "Approve + Create PR"}</button>
-                      ${String(f.status || "").toLowerCase() !== "pr_open" ? `<button class="btn btn-danger ${fixActionBusyKey === `reject:${f.id}` ? "is-loading" : ""}" data-fix-action="reject" data-fix-id="${f.id}" ${fixActionBusyKey ? "disabled" : ""}>Reject</button>` : ""}
-                    `
-                        : `<span class="muted">-</span>`
-                    }
-                  </td>
-                </tr>`
-                    )
-                    .join("") ||
-                  `<tr><td colspan="7" class="muted">No AI-generated fixes queued for this scan yet.</td></tr>`
-                }
-              </tbody>
-            </table>
-          </div>
-          </div>
+          ${renderScanDetailFixesCardHtml()}
         `
         }
       </div>
@@ -514,11 +639,31 @@ export function renderScanDetailPage() {
   `
   );
   restorePreservedScroll(root, preservedScroll);
-  root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
+  restorePreservedDetailsOpen(root, { ...(state.scanDetailUiOpenDetails || {}), ...preservedOpen });
+  restorePreservedFocus(root, preservedFocus);
+  if (root) {
+    root.scrollTop = rootScrollTop;
+    root.scrollLeft = rootScrollLeft;
+  }
+  root.querySelectorAll("[data-preserve-open-key]").forEach((el) => {
+    el.addEventListener("toggle", () => {
+      const key = String(el.getAttribute("data-preserve-open-key") || "").trim();
+      if (!key) return;
+      state.scanDetailUiOpenDetails[key] = !!el.open;
+    });
+  });
+  root.querySelector("#detailBackToScans")?.addEventListener("click", () => {
+    if (window.history.length > 1) {
+      history.back();
+    } else {
+      setView("scans", { pushHistory: true });
+    }
+  });
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
     if (state.selectedJobId)
       await selectJob(state.selectedJobId, {
         preserveFindingsState: true,
+        preserveFixesState: true,
         preserveRemediationState: true,
         showLoading: true,
       });
@@ -625,37 +770,7 @@ export function renderScanDetailPage() {
       renderScanDetailPage();
     })
   );
-  root.querySelectorAll("[data-fix-action]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const id = Number(btn.dataset.fixId);
-      const action = btn.dataset.fixAction;
-      await handleFixAction(id, action);
-    });
-  });
-  root.querySelector("#detailFixesSearch")?.addEventListener("input", (e) => {
-    state.scanDetailFixesSearch = e.target.value || "";
-    state.scanDetailFixesPage = 1;
-    renderScanDetailPage();
-  });
-  root.querySelector("#detailFixesStatusFilter")?.addEventListener("change", (e) => {
-    state.scanDetailFixesStatus = e.target.value || "";
-    state.scanDetailFixesPage = 1;
-    renderScanDetailPage();
-  });
-  root.querySelector("#detailFixesSearchClear")?.addEventListener("click", () => {
-    state.scanDetailFixesSearch = "";
-    state.scanDetailFixesStatus = "";
-    state.scanDetailFixesPage = 1;
-    renderScanDetailPage();
-  });
-  root.querySelector("#detailFixesPrev")?.addEventListener("click", () => {
-    state.scanDetailFixesPage = Math.max(1, (state.scanDetailFixesPage || 1) - 1);
-    renderScanDetailPage();
-  });
-  root.querySelector("#detailFixesNext")?.addEventListener("click", () => {
-    state.scanDetailFixesPage = Math.min(fixTotalPages, (state.scanDetailFixesPage || 1) + 1);
-    renderScanDetailPage();
-  });
+  bindScanDetailFixesCard(root);
   root.querySelector("#detailLaunchReviewCampaign")?.addEventListener("click", launchReviewCampaignForSelectedScan);
   root.querySelector("#detailStopReviewCampaign")?.addEventListener("click", stopReviewCampaignForSelectedScan);
 }

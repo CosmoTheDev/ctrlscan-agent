@@ -13,6 +13,11 @@ export const views = [
     hidden: true,
   },
   {
+    id: "vulnerabilities",
+    title: "Vulnerabilities",
+    subtitle: "Cross-repo vulnerability database with filters and AI fix status.",
+  },
+  {
     id: "remediation",
     title: "Remediation",
     subtitle: "Offline AI fix/PR campaigns on existing findings and scan jobs.",
@@ -23,12 +28,16 @@ export const views = [
   { id: "events", title: "Events", subtitle: "Live SSE events emitted by the gateway." },
 ];
 
-export function viewToPath(id) {
+export function viewToPath(id, opts = {}) {
   switch (id) {
     case "overview":
       return "/ui/overview";
     case "scans":
       return "/ui/scans";
+    case "vulnerabilities": {
+      const params = opts.params ? `?${new URLSearchParams(opts.params).toString()}` : "";
+      return `/ui/vulnerabilities${params}`;
+    }
     case "remediation":
       return "/ui/remediation";
     case "cron":
@@ -48,6 +57,7 @@ export function viewToPath(id) {
 }
 
 export function setView(id, opts = {}) {
+  const prevView = state.view;
   state.view = id;
   for (const v of views) {
     document.getElementById(`view-${v.id}`).classList.toggle("active", v.id === id);
@@ -62,6 +72,14 @@ export function setView(id, opts = {}) {
     history.pushState({ view: id, jobId: state.selectedJobId || null }, "", path);
   }
   renderNav();
+  // Trigger data load when switching to vulnerabilities view
+  if (id === "vulnerabilities" && prevView !== "vulnerabilities") {
+    import("./actions.js").then(({ refreshVulnerabilities }) => refreshVulnerabilities()).catch(() => {});
+  }
+  // Load repo suggestions when switching to scans view
+  if (id === "scans" && !state.scansRepoSuggestionsLoaded) {
+    import("./actions.js").then(({ refreshScansRepos }) => refreshScansRepos()).catch(() => {});
+  }
 }
 
 export function renderNav() {
@@ -134,6 +152,14 @@ export async function applyRouteFromLocation() {
   }
   if (section === "" || section === "ui" || section === "overview") {
     setView("overview");
+    return;
+  }
+  if (section === "vulnerabilities") {
+    const urlParams = new URLSearchParams(window.location.search || "");
+    // Circular import — used inside function body, safe.
+    const { applyVulnerabilitiesUrlParams } = await import("./actions.js");
+    applyVulnerabilitiesUrlParams(urlParams);
+    setView("vulnerabilities");
     return;
   }
   const alias = {

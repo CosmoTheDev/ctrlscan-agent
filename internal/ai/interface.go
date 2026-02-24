@@ -48,8 +48,14 @@ type TriagedFinding struct {
 // FixRequest contains all the context needed to generate a fix.
 type FixRequest struct {
 	Finding models.FindingSummary `json:"finding"`
-	// CodeContext is the relevant source code snippet with surrounding lines.
+	// CodeContext is the finding's surrounding lines (with line numbers).
 	CodeContext string `json:"code_context"`
+	// FileContent is the full file content when the file is small enough to
+	// include entirely, giving the model complete context. Empty when the file
+	// is too large (use CodeContext instead).
+	FileContent string `json:"file_content,omitempty"`
+	// TotalLines is the total number of lines in the target file.
+	TotalLines int `json:"total_lines,omitempty"`
 	// FilePath is the path relative to the repo root.
 	FilePath string `json:"file_path"`
 	// Language is the programming language (e.g. "Go", "Python").

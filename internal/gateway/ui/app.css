@@ -360,6 +360,7 @@ body { min-height: 100vh; min-height: 100dvh; overflow: hidden; }
 
 /* --- Grid --- */
 .grid { display: grid; gap: 12px; }
+.grid.cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -464,6 +465,16 @@ body { min-height: 100vh; min-height: 100dvh; overflow: hidden; }
 .badge.status-failed    { background: var(--sev-c-bg);  border-color: var(--sev-c-bd); color: var(--s-danger); }
 .badge.status-partial   { background: var(--sev-m-bg);  border-color: var(--sev-m-bd); color: var(--s-warn); }
 .badge.status-stopped   { background: rgba(192,132,252,0.10); border-color: rgba(192,132,252,0.28); color: var(--s-stop); }
+/* Severity badges */
+.badge-critical { background: var(--sev-c-bg); border-color: var(--sev-c-bd); color: var(--sev-c); }
+.badge-high     { background: var(--sev-h-bg); border-color: var(--sev-h-bd); color: var(--sev-h); }
+.badge-medium   { background: var(--sev-m-bg); border-color: var(--sev-m-bd); color: var(--sev-m); }
+.badge-low      { background: var(--sev-l-bg); border-color: var(--sev-l-bd); color: var(--sev-l); }
+/* Status utility badges */
+.badge-ok      { background: var(--sev-l-bg);  border-color: rgba(52,211,153,0.28); color: var(--s-ok); }
+.badge-run     { background: rgba(96,165,250,0.10); border-color: rgba(96,165,250,0.28); color: var(--s-run); }
+.badge-danger  { background: var(--sev-c-bg); border-color: var(--sev-c-bd); color: var(--s-danger); }
+.badge-warn    { background: var(--sev-m-bg); border-color: var(--sev-m-bd); color: var(--s-warn); }
 
 /* --- Tables --- */
 table { width: 100%; border-collapse: collapse; }
@@ -495,6 +506,9 @@ tr:hover td { background: var(--nav-hover-bg); }
 .compact-findings-wrap th:nth-child(3),
 .compact-findings-wrap td:nth-child(3) { width: 110px; }
 .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+td.row-actions { display: table-cell; white-space: nowrap; }
+td.row-actions > .btn { margin-right: 6px; }
+td.row-actions > .btn:last-child { margin-right: 0; }
 .table-wrap input[type="checkbox"] { width: 14px; height: 14px; margin: 0; }
 
 /* --- Form Elements --- */
@@ -695,6 +709,27 @@ textarea.code-edit:focus { outline: none; border-color: var(--in-focus-bd); }
 .scan-detail-layout { display: grid; gap: 14px; }
 .sticky-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
 
+/* --- Vulnerabilities View --- */
+#view-vulnerabilities.active { overflow: hidden; display: flex; flex-direction: column; }
+.vuln-layout {
+  display: flex;
+  flex-direction: column;
+  /* Fill the view area without overflowing the page — account for topbar (72px) + view padding (48px) */
+  height: calc(100vh - 120px);
+  min-height: 400px;
+}
+.vuln-table-wrap {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  min-height: 200px;
+  border-radius: 6px;
+  border: 1px solid var(--line-md);
+  background: var(--card);
+}
+.vuln-table-wrap table { table-layout: fixed; }
+.vuln-table-wrap th, .vuln-table-wrap td { white-space: normal; overflow-wrap: anywhere; }
+
 /* --- AI Runtime Banner --- */
 .ai-runtime-banner {
   margin-top: 10px;
@@ -728,6 +763,56 @@ textarea.code-edit:focus { outline: none; border-color: var(--in-focus-bd); }
 ::-webkit-scrollbar-thumb { background: var(--sb-thumb); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { opacity: .8; }
 
+/* --- Scans page layout --- */
+.scans-main-split { align-items: stretch; }
+.scans-main-split > .card.scans-panel { display: flex; flex-direction: column; min-height: 420px; }
+.scans-main-split > .card.scans-panel > .table-wrap.scans-table-fill,
+.scans-main-split > .card.scans-panel .stack .table-wrap.scans-table-fill { flex: 1; overflow: auto; min-height: 160px; }
+.scans-top-card { min-height: 0; }
+
+/* --- Multiselect combobox --- */
+.ms-combo { position: relative; display: inline-block; min-width: 180px; }
+.ms-combo-trigger {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  padding: 4px 8px; min-height: 34px;
+  border: 1px solid var(--in-bd); border-radius: 6px;
+  background: var(--in-bg); cursor: text;
+  transition: border-color 80ms;
+}
+.ms-combo-trigger:focus-within { border-color: var(--in-focus-bd); }
+.ms-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px; background: var(--btn-secondary-bg);
+  border: 1px solid var(--card-border); border-radius: 4px;
+  font-size: 11px; white-space: nowrap;
+}
+.ms-chip-remove {
+  border: none; background: none; cursor: pointer; padding: 0;
+  color: var(--muted-text); font-size: 14px; line-height: 1;
+  display: flex; align-items: center;
+}
+.ms-chip-remove:hover { color: var(--text); }
+.ms-combo-input {
+  border: none; outline: none; background: transparent;
+  font-size: 13px; min-width: 80px; flex: 1; padding: 2px 0;
+  color: var(--text); font-family: inherit;
+  width: auto;
+}
+.ms-combo-dropdown {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+  z-index: 200; background: var(--card-bg);
+  border: 1px solid var(--card-border); border-radius: 6px;
+  max-height: 220px; overflow-y: auto;
+  box-shadow: 0 6px 20px rgba(0,0,0,.35);
+}
+.ms-combo-option {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; cursor: pointer; font-size: 13px;
+}
+.ms-combo-option:hover { background: var(--nav-hover-bg); }
+.ms-combo-option input[type="checkbox"] { width: 14px; height: 14px; flex-shrink: 0; }
+.ms-combo-empty { padding: 8px 12px; color: var(--muted-text); font-size: 12px; }
+
 /* --- Responsive --- */
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 1fr; }
@@ -739,7 +824,7 @@ textarea.code-edit:focus { outline: none; border-color: var(--in-focus-bd); }
   .nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .nav button::before { display: none; }
   .sidebar-footer { display: none; }
-  .grid.cols-4, .grid.cols-3, .grid.cols-2, .split, .form-grid { grid-template-columns: 1fr; }
+  .grid.cols-5, .grid.cols-4, .grid.cols-3, .grid.cols-2, .split, .form-grid { grid-template-columns: 1fr; }
   .topbar { margin-bottom: 16px; padding-bottom: 12px; flex-direction: column; }
   .check-grid { grid-template-columns: 1fr; }
   .modal-split { grid-template-columns: 1fr; }

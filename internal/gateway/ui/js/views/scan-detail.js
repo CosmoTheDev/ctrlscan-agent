@@ -402,7 +402,7 @@ export function renderScanDetailPage() {
             <div style="margin-top:8px"><span class="badge ${statusClass(selectedJob.status)}">${escapeHtml(selectedJob.status)}</span></div>
           </div>
           <div class="row-actions">
-            <button id="detailBackToScans" class="btn btn-secondary">Back To Scans</button>
+            <button id="detailBackToScans" class="btn btn-secondary">← Back</button>
             <button id="detailRefresh" class="btn btn-secondary">Refresh Detail</button>
           </div>
         </div>
@@ -644,7 +644,9 @@ export function renderScanDetailPage() {
       state.scanDetailUiOpenDetails[key] = !!el.open;
     });
   });
-  root.querySelector("#detailBackToScans")?.addEventListener("click", () => setView("scans"));
+  root.querySelector("#detailBackToScans")?.addEventListener("click", () => {
+    if (window.history.length > 1) { history.back(); } else { setView("scans", { pushHistory: true }); }
+  });
   root.querySelector("#detailRefresh")?.addEventListener("click", async () => {
     if (state.selectedJobId)
       await selectJob(state.selectedJobId, {

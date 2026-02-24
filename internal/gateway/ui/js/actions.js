@@ -20,6 +20,7 @@ import { renderHealthPill, renderOverview } from "./views/overview.js";
 import { renderRemediation } from "./views/remediation.js";
 import { renderScanDetailPage } from "./views/scan-detail.js";
 import { renderScans } from "./views/scans.js";
+import { renderVulnerabilities } from "./views/vulnerabilities.js";
 
 
 /* ---- SSE / Events ---- */
@@ -168,11 +169,28 @@ function reconcileSelectedJobs() {
   state.selectedScanJobIds = next;
 }
 
+export async function refreshScansRepos() {
+  try {
+    const res = await api("/api/jobs/repos?page_size=500");
+    const items = Array.isArray(res?.items) ? res.items : Array.isArray(res) ? res : [];
+    state.scansRepoSuggestions = items.map((r) => `${r.owner}/${r.repo}`);
+    state.scansRepoSuggestionsLoaded = true;
+  } catch (_) {}
+}
+
 export async function refreshJobs() {
   state.scansLoading = true;
   renderScans();
   try {
-    const jobsRes = await api(`/api/jobs?page=${state.scansPage || 1}&page_size=${state.scansPageSize || 20}`);
+    const f = state.scansFilters || {};
+    const params = new URLSearchParams();
+    params.set("page", String(state.scansPage || 1));
+    params.set("page_size", String(state.scansPageSize || 20));
+    if (f.status) params.set("status", f.status);
+    if (f.minHigh) params.set("min_high", f.minHigh);
+    if (f.minMedium) params.set("min_medium", f.minMedium);
+    for (const r of f.repos || []) params.append("repo", r);
+    const jobsRes = await api(`/api/jobs?${params.toString()}`);
     if (jobsRes && Array.isArray(jobsRes.items)) {
       state.jobs = jobsRes.items;
       state.jobsTotal = Number(jobsRes.total || 0);
@@ -1200,6 +1218,80 @@ export async function refreshConfig() {
   renderConfig();
 }
 
+/* ---- Vulnerabilities ---- */
+
+export async function refreshVulnerabilities() {
+  state.vulnerabilitiesLoading = true;
+  renderVulnerabilities();
+  try {
+    const f = state.vulnerabilitiesFilters || {};
+    const params = new URLSearchParams();
+    params.set("page", String(state.vulnerabilitiesPage || 1));
+    params.set("page_size", String(state.vulnerabilitiesPageSize || 50));
+    if (f.severity) params.set("severity", f.severity);
+    if (f.kind) params.set("kind", f.kind);
+    if (f.scanner) params.set("scanner", f.scanner);
+    if (f.status) params.set("status", f.status);
+    if (f.repo) params.set("repo", f.repo);
+    if (f.q) params.set("q", f.q);
+    if (Array.isArray(f.cves) && f.cves.length) {
+      for (const c of f.cves) params.append("cves", c);
+    }
+    const res = await api(`/api/vulnerabilities?${params.toString()}`);
+    if (res && Array.isArray(res.items)) {
+      state.vulnerabilities = res.items;
+      state.vulnerabilitiesTotal = Number(res.total || 0);
+      state.vulnerabilitiesTotalPages = Number(res.total_pages || 1);
+      state.vulnerabilitiesPage = Number(res.page || state.vulnerabilitiesPage || 1);
+      state.vulnerabilitiesPageSize = Number(res.page_size || state.vulnerabilitiesPageSize || 50);
+      state.vulnerabilitiesFacets = res.facets || { severities: [], kinds: [], scanners: [], repos: [], cves: [] };
+      state.vulnerabilitiesSeverityTotals = res.severity_totals || { critical: 0, high: 0, medium: 0, low: 0, fixed: 0 };
+    } else {
+      state.vulnerabilities = [];
+      state.vulnerabilitiesTotal = 0;
+      state.vulnerabilitiesTotalPages = 1;
+    }
+    // Sync URL params for shareability
+    if (state.view === "vulnerabilities") {
+      const urlParams = {};
+      if (f.severity) urlParams.severity = f.severity;
+      if (f.kind) urlParams.kind = f.kind;
+      if (f.scanner) urlParams.scanner = f.scanner;
+      if (f.repo) urlParams.repo = f.repo;
+      if (f.q) urlParams.q = f.q;
+      if (f.status && f.status !== "open") urlParams.status = f.status;
+      const p2 = new URLSearchParams(urlParams);
+      if (Array.isArray(f.cves) && f.cves.length) f.cves.forEach((c) => p2.append("cves", c));
+      const qs = p2.toString() ? "?" + p2.toString() : "";
+      const newPath = "/ui/vulnerabilities" + qs;
+      if (window.location.pathname + window.location.search !== newPath) {
+        history.replaceState({ view: "vulnerabilities" }, "", newPath);
+      }
+    }
+  } catch (err) {
+    showToast({ message: `Vulnerabilities load failed: ${err.message}`, kind: "error" });
+  } finally {
+    state.vulnerabilitiesLoading = false;
+    renderVulnerabilities();
+  }
+}
+
+export function applyVulnerabilitiesUrlParams(urlParams) {
+  const cves = urlParams.getAll("cves").concat(
+    (urlParams.get("cve") || "").split(",").map((s) => s.trim()).filter(Boolean)
+  );
+  state.vulnerabilitiesFilters = {
+    severity: urlParams.get("severity") || "",
+    kind: urlParams.get("kind") || "",
+    scanner: urlParams.get("scanner") || "",
+    repo: urlParams.get("repo") || "",
+    q: urlParams.get("q") || "",
+    status: urlParams.get("status") || "open",
+    cves: [...new Set(cves)],
+  };
+  state.vulnerabilitiesPage = Number(urlParams.get("page") || 1);
+}
+
 /* ---- Refresh All ---- */
 
 export async function refreshAll() {
@@ -1238,6 +1330,7 @@ export async function refreshAll() {
   renderOverview();
   renderScans();
   renderScanDetailPage();
+  renderVulnerabilities();
   renderCron();
   renderAgents();
   renderEvents();

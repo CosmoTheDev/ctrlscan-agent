@@ -76,8 +76,10 @@ function summarizeApplyHints(raw) {
     const h = JSON.parse(text);
     const parts = [];
     if (h?.apply_strategy) parts.push(String(h.apply_strategy));
-    if (Array.isArray(h?.target_files) && h.target_files.length) parts.push(`${h.target_files.length} file${h.target_files.length === 1 ? "" : "s"}`);
-    if (Array.isArray(h?.post_apply_checks) && h.post_apply_checks.length) parts.push(`${h.post_apply_checks.length} check${h.post_apply_checks.length === 1 ? "" : "s"}`);
+    if (Array.isArray(h?.target_files) && h.target_files.length)
+      parts.push(`${h.target_files.length} file${h.target_files.length === 1 ? "" : "s"}`);
+    if (Array.isArray(h?.post_apply_checks) && h.post_apply_checks.length)
+      parts.push(`${h.post_apply_checks.length} check${h.post_apply_checks.length === 1 ? "" : "s"}`);
     return parts.join(" • ") || "apply hints";
   } catch {
     return "apply hints";

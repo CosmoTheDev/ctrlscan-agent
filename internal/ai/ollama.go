@@ -77,7 +77,11 @@ func (o *OllamaProvider) IsAvailable(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Debug("closing Ollama tags response body failed", "error", closeErr)
+		}
+	}()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -216,9 +220,15 @@ func (o *OllamaProvider) complete(ctx context.Context, prompt string) (string, e
 			lastErr = fmt.Errorf("calling Ollama API: %w", err)
 		} else {
 			data, readErr := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			closeErr := resp.Body.Close()
 			if readErr != nil {
-				lastErr = fmt.Errorf("reading Ollama response: %w", readErr)
+				if closeErr != nil {
+					lastErr = fmt.Errorf("reading Ollama response: %w (close body: %v)", readErr, closeErr)
+				} else {
+					lastErr = fmt.Errorf("reading Ollama response: %w", readErr)
+				}
+			} else if closeErr != nil {
+				lastErr = fmt.Errorf("closing Ollama response body: %w", closeErr)
 			} else if resp.StatusCode != http.StatusOK {
 				msg := strings.TrimSpace(string(data))
 				if msg == "" {

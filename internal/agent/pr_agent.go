@@ -509,7 +509,7 @@ func runCmd(ctx context.Context, dir, name string, args ...string) error {
 	default:
 		return fmt.Errorf("runCmd: disallowed command %q", name)
 	}
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- name validated against allowlist above
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -118,17 +118,40 @@ Return only valid JSON.`, string(findingsJSON))
 }
 
 func (o *OllamaProvider) GenerateFix(ctx context.Context, req FixRequest) (*FixResult, error) {
-	reqJSON, _ := json.MarshalIndent(req, "", "  ")
-	prompt := fmt.Sprintf(`Generate a minimal security fix as JSON with "patch", "explanation", "confidence", and optional "apply_hints".
-"apply_hints" should be an object and may include:
-- "target_files" (array of repo-relative file paths expected to change)
-- "apply_strategy" ("git_apply", "edit_file_directly", or "dependency_bump")
-- "prerequisites" (array of assumptions/checks before applying)
-- "post_apply_checks" (array of commands/checks to run after applying)
-- "fallback_patch_notes" (brief notes if git apply may fail due to offsets/context)
-- "risk_notes" (brief reviewer caution notes)
-Context: %s
-Return only valid JSON.`, string(reqJSON))
+	// Build the file-content section.
+	var fileSectionBuf strings.Builder
+	if req.FileContent != "" {
+		fmt.Fprintf(&fileSectionBuf,
+			"FULL FILE (%s, %d lines):\n%s\n",
+			req.FilePath, req.TotalLines, req.FileContent)
+	} else if req.CodeContext != "" {
+		fmt.Fprintf(&fileSectionBuf,
+			"FILE EXCERPT (%s, finding line marked >>):\n%s\n",
+			req.FilePath, req.CodeContext)
+	}
+
+	findingJSON, _ := json.MarshalIndent(req.Finding, "", "  ")
+
+	// The patch hunk header example uses placeholder numbers so the model
+	// understands the required format concretely.
+	prompt := fmt.Sprintf(`You are a security engineer. Fix the vulnerability below by producing a unified diff.
+
+FINDING:
+%s
+
+%s
+PATCH RULES — follow exactly or git apply will fail:
+- Header: "--- a/<path>" then "+++ b/<path>"
+- Hunk header MUST have real line numbers: "@@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@"
+  CORRECT:   @@ -10,3 +10,4 @@
+  WRONG:     @@
+  WRONG:     @@ @@
+- Context lines: leading space. Added: leading +. Removed: leading -.
+- Do NOT wrap the patch in markdown code fences.
+
+Return ONLY valid JSON (no extra text, no markdown):
+{"patch":"<unified diff>","explanation":"<why>","confidence":<0.0-1.0>,"apply_hints":{"target_files":["%s"],"apply_strategy":"git_apply","post_apply_checks":[],"risk_notes":""}}`,
+		string(findingJSON), fileSectionBuf.String(), req.FilePath)
 
 	resp, err := o.complete(ctx, prompt)
 	if err != nil {

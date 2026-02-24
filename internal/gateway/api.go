@@ -2879,7 +2879,7 @@ func (gw *Gateway) handleFixApprove(w http.ResponseWriter, r *http.Request) {
 		Type:    "fix.approved",
 		Payload: map[string]any{"id": id},
 	})
-	gw.trigger() // wake orchestrator so PRAgent can pick this up
+	gw.triggerPRProcessing() // wake PR worker to pick this up (not a full scan sweep)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "approved"})
 }
 

@@ -96,7 +96,6 @@ export const state = {
   navPendingView: "",
   scansLoading: false,
   selectedJobLoading: false,
-  selectedJobSyncing: false,
   scansActionBusy: "",
   cronActionBusy: "",
   fixActionBusyKey: "",
@@ -105,6 +104,7 @@ export const state = {
   scanDetailFixesPageSize: 10,
   scanDetailFixesSearch: "",
   scanDetailFixesStatus: "",
+  scanDetailUiOpenDetails: {},
   sweepUi: {
     skipEventCount: 0,
     latestSummary: null,

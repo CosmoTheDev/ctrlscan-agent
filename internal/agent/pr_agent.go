@@ -288,6 +288,7 @@ func gitPush(repoPath, branch, token, remoteURL string) error {
 }
 
 func applyPatch(repoPath, patch string) error {
+	patch = cleanPatch(patch) // strip markdown fences, normalise CRLF
 	if strings.TrimSpace(patch) == "" {
 		return fmt.Errorf("empty patch")
 	}
@@ -299,7 +300,171 @@ func applyPatch(repoPath, patch string) error {
 		return err
 	}
 	defer os.Remove(patchFile)
-	return runGit(repoPath, "apply", patchFile)
+	if err := runGit(repoPath, "apply", patchFile); err != nil {
+		// Fallback: apply additions directly by content-searching for context
+		// anchors. Handles bare @@ headers and non-adjacent context that AI
+		// models produce.
+		if fbErr := applyAdditionsDirectly(repoPath, patch); fbErr != nil {
+			return fmt.Errorf("%w (direct-edit fallback also failed: %v)", err, fbErr)
+		}
+		return nil
+	}
+	return nil
+}
+
+// applyAdditionsDirectly applies an addition-only patch by finding each hunk's
+// context anchor line by content and inserting the added lines at that position.
+// It does not rely on correct @@ line numbers and handles non-adjacent context.
+func applyAdditionsDirectly(repoPath, patch string) error {
+	// Resolve target file from "+++ b/path".
+	var targetFile string
+	for _, l := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(l, "+++ ") {
+			p := strings.TrimPrefix(l, "+++ ")
+			p = strings.TrimPrefix(p, "b/")
+			targetFile = strings.TrimSpace(p)
+			break
+		}
+	}
+	if targetFile == "" {
+		return fmt.Errorf("no target file in patch")
+	}
+	filePath := filepath.Join(repoPath, targetFile)
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", targetFile, err)
+	}
+	fileLines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+
+	type hunkLine struct {
+		kind rune   // '+', '-', ' '
+		text string // content without leading sigil
+	}
+
+	// Parse all hunks from the patch.
+	var allHunks [][]hunkLine
+	var current []hunkLine
+	inHunk := false
+	for _, l := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(l, "@@") {
+			if inHunk && len(current) > 0 {
+				allHunks = append(allHunks, current)
+			}
+			current = nil
+			inHunk = true
+			continue
+		}
+		if strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+++ ") {
+			continue
+		}
+		if !inHunk {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(l, "+"):
+			current = append(current, hunkLine{'+', strings.TrimPrefix(l, "+")})
+		case strings.HasPrefix(l, "-"):
+			current = append(current, hunkLine{'-', strings.TrimPrefix(l, "-")})
+		default:
+			// context line (space prefix or bare empty line at end of patch)
+			text := strings.TrimPrefix(l, " ")
+			if strings.TrimSpace(text) == "" {
+				continue // skip trailing blank lines
+			}
+			current = append(current, hunkLine{' ', text})
+		}
+	}
+	if inHunk && len(current) > 0 {
+		allHunks = append(allHunks, current)
+	}
+	if len(allHunks) == 0 {
+		return fmt.Errorf("no hunks parsed")
+	}
+
+	// Reject if any hunk contains deletions — we only handle additions here.
+	for _, hunk := range allHunks {
+		for _, hl := range hunk {
+			if hl.kind == '-' {
+				return fmt.Errorf("patch contains deletions; direct-edit fallback requires addition-only patches")
+			}
+		}
+	}
+
+	// Apply each hunk in order. We search by content so searchFrom only
+	// prevents matching something inserted by an earlier hunk.
+	searchFrom := 0
+	for _, hunk := range allHunks {
+		i := 0
+		for i < len(hunk) {
+			// Skip leading context lines.
+			for i < len(hunk) && hunk[i].kind == ' ' {
+				i++
+			}
+			if i >= len(hunk) {
+				break
+			}
+			// Collect this block of additions.
+			var additions []string
+			for i < len(hunk) && hunk[i].kind == '+' {
+				additions = append(additions, hunk[i].text)
+				i++
+			}
+			if len(additions) == 0 {
+				i++
+				continue
+			}
+			// Determine the insertion point.
+			var insertAt int
+			if i < len(hunk) && hunk[i].kind == ' ' {
+				// Insert just before the first context line after the additions.
+				afterAnchor := hunk[i].text
+				pos := findLineByContent(fileLines, afterAnchor, searchFrom)
+				if pos < 0 {
+					return fmt.Errorf("after-context %q not found in %s", afterAnchor, targetFile)
+				}
+				insertAt = pos
+			} else {
+				// No after-context: find the last context line before additions
+				// and insert just after it.
+				beforeAnchor := ""
+				for j := i - len(additions) - 1; j >= 0; j-- {
+					if hunk[j].kind == ' ' {
+						beforeAnchor = hunk[j].text
+						break
+					}
+				}
+				if beforeAnchor == "" {
+					return fmt.Errorf("no context anchor found for hunk additions")
+				}
+				pos := findLineByContent(fileLines, beforeAnchor, searchFrom)
+				if pos < 0 {
+					return fmt.Errorf("before-context %q not found in %s", beforeAnchor, targetFile)
+				}
+				insertAt = pos + 1
+			}
+			// Insert additions into fileLines.
+			newLines := make([]string, 0, len(fileLines)+len(additions))
+			newLines = append(newLines, fileLines[:insertAt]...)
+			newLines = append(newLines, additions...)
+			newLines = append(newLines, fileLines[insertAt:]...)
+			fileLines = newLines
+			searchFrom = insertAt + len(additions)
+		}
+	}
+
+	return os.WriteFile(filePath, []byte(strings.Join(fileLines, "\n")), 0o644)
+}
+
+// findLineByContent returns the index of the first line in lines (at or after
+// startFrom) whose content matches target (trailing whitespace ignored).
+func findLineByContent(lines []string, target string, startFrom int) int {
+	t := strings.TrimRight(target, " \t")
+	for i := startFrom; i < len(lines); i++ {
+		if strings.TrimRight(lines[i], " \t") == t {
+			return i
+		}
+	}
+	return -1
 }
 
 func applyDependencyBump(ctx context.Context, repoPath string, hints aiPkg.ApplyHints) error {

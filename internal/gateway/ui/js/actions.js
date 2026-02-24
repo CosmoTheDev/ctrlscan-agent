@@ -21,6 +21,7 @@ import { renderRemediation } from "./views/remediation.js";
 import { renderScanDetailPage } from "./views/scan-detail.js";
 import { renderScans } from "./views/scans.js";
 
+
 /* ---- SSE / Events ---- */
 
 export function pushEvent(evt) {
@@ -95,7 +96,11 @@ export function scheduleLiveRefresh(opts = {}) {
       if (pending.remediation || state.view === "remediation") tasks.push(refreshRemediation());
       if (tasks.length > 0) await Promise.all(tasks);
       if (pending.detail && state.selectedJobId) {
-        await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
+        await selectJob(state.selectedJobId, {
+          preserveFindingsState: true,
+          preserveFixesState: true,
+          preserveRemediationState: true,
+        });
       }
     } catch (_) {
       // best-effort live refresh; status stream continues even if this fails
@@ -270,12 +275,9 @@ export async function selectJob(id, opts = {}) {
   const switchingJobs = Number(state.selectedJobId || 0) !== Number(id || 0);
   const hasExistingDetail = !!state.selectedJob;
   const shouldShowInlineLoading = switchingJobs || !hasExistingDetail;
-  const shouldShowBackgroundSync = !shouldShowInlineLoading;
   if (showLoading) showGlobalLoading("Loading scan detail…");
   state.selectedJobLoading = shouldShowInlineLoading;
-  state.selectedJobSyncing = shouldShowBackgroundSync;
   if (state.view === "scan-detail" && shouldShowInlineLoading) renderScanDetailPage();
-  if (state.view === "scan-detail" && shouldShowBackgroundSync) renderScanDetailPage();
   state.selectedJobId = id;
   if (!opts.preserveFindingsState) {
     state.scanDetailFindingsPage = 1;
@@ -286,6 +288,7 @@ export async function selectJob(id, opts = {}) {
     state.scanDetailFixesPage = 1;
     state.scanDetailFixesSearch = "";
     state.scanDetailFixesStatus = "";
+    state.scanDetailUiOpenDetails = {};
   }
   if (!opts.preserveRemediationState) {
     state.selectedJobRemediationRunsPage = 1;
@@ -299,10 +302,8 @@ export async function selectJob(id, opts = {}) {
     state.selectedJobFixes = await api(`/api/jobs/${id}/fixes`);
     await loadSelectedJobRemediationRuns();
     renderScans();
-    if (state.view === "scan-detail") renderScanDetailPage();
   } finally {
     state.selectedJobLoading = false;
-    state.selectedJobSyncing = false;
     if (state.view === "scan-detail") renderScanDetailPage();
     if (showLoading) hideGlobalLoading();
   }
@@ -323,6 +324,7 @@ export function clearSelectedJob() {
   state.scanDetailFixesPage = 1;
   state.scanDetailFixesSearch = "";
   state.scanDetailFixesStatus = "";
+  state.scanDetailUiOpenDetails = {};
   state.selectedJobRemediationRuns = [];
   state.selectedJobRemediationRunsTotal = 0;
   state.selectedJobRemediationRunsPage = 1;
@@ -331,7 +333,6 @@ export function clearSelectedJob() {
   state.scanDetailFindingsPage = 1;
   state.scanDetailFindingsFilters = { kind: "", scanner: "", severity: "", title: "", path: "", q: "" };
   state.scanDetailFindingsDraft = { title: "", path: "", q: "" };
-  state.selectedJobSyncing = false;
 }
 
 export async function deleteOneScanJob(id) {
@@ -849,7 +850,11 @@ export async function handleFixAction(id, action) {
     if (!path) return;
     await api(path, { method: "POST", body: "{}" });
     if (state.selectedJobId) {
-      await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
+      await selectJob(state.selectedJobId, {
+        preserveFindingsState: true,
+        preserveFixesState: true,
+        preserveRemediationState: true,
+      });
     } else {
       await refreshJobs();
     }
@@ -1055,7 +1060,11 @@ export async function launchReviewCampaignForSelectedScan() {
     if (state.selectedJobId === job.id) {
       setTimeout(async () => {
         try {
-          await selectJob(job.id, { preserveFindingsState: true, preserveRemediationState: true });
+          await selectJob(job.id, {
+            preserveFindingsState: true,
+            preserveFixesState: true,
+            preserveRemediationState: true,
+          });
         } catch (_) {}
       }, 1500);
     }
@@ -1208,7 +1217,11 @@ export async function refreshAll() {
       refreshRemediation(),
     ]);
     if (state.selectedJobId) {
-      await selectJob(state.selectedJobId, { preserveFindingsState: true, preserveRemediationState: true });
+      await selectJob(state.selectedJobId, {
+        preserveFindingsState: true,
+        preserveFixesState: true,
+        preserveRemediationState: true,
+      });
     }
     if (state.view === "config") {
       await refreshConfig();

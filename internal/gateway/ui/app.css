@@ -495,6 +495,9 @@ tr:hover td { background: var(--nav-hover-bg); }
 .compact-findings-wrap th:nth-child(3),
 .compact-findings-wrap td:nth-child(3) { width: 110px; }
 .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+td.row-actions { display: table-cell; white-space: nowrap; }
+td.row-actions > .btn { margin-right: 6px; }
+td.row-actions > .btn:last-child { margin-right: 0; }
 .table-wrap input[type="checkbox"] { width: 14px; height: 14px; margin: 0; }
 
 /* --- Form Elements --- */

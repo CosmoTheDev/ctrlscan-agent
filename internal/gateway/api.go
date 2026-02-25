@@ -558,6 +558,8 @@ func (gw *Gateway) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if fileName != "" {
+		// Reject any path that is not a bare file name (no directory
+		// separators or parent-directory references).
 		clean := filepath.Base(fileName)
 		if clean != fileName || strings.Contains(fileName, "..") {
 			writeError(w, http.StatusBadRequest, "invalid file name")
@@ -568,7 +570,12 @@ func (gw *Gateway) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 	var lines []string
 	if fileName != "" {
-		lines, err = tailFileLines(filepath.Join(logDir, fileName), tail)
+		absLogDir, absErr := filepath.Abs(logDir)
+		if absErr != nil {
+			writeError(w, http.StatusInternalServerError, "resolving log directory")
+			return
+		}
+		lines, err = tailFileLines(absLogDir, fileName, tail)
 		if err != nil {
 			if os.IsNotExist(err) {
 				writeError(w, http.StatusNotFound, "log file not found")
@@ -635,8 +642,21 @@ func listLogFiles(dir string) ([]logFileEntry, error) {
 	return out, nil
 }
 
-func tailFileLines(path string, tail int) ([]string, error) {
-	f, err := os.Open(path)
+// tailFileLines reads a file from absLogDir/name, returning up to tail lines.
+// absLogDir must be an absolute path; name must be a single file-name component
+// (already stripped of directory separators by the caller). The function
+// re-validates the final path is within absLogDir before opening it.
+func tailFileLines(absLogDir, name string, tail int) ([]string, error) {
+	// Reconstruct and verify the path is within the safe directory.
+	// This co-locates the guard with the os.Open so CodeQL's taint analysis
+	// can see the sanitization at the sink rather than relying on inter-procedural
+	// propagation from the caller.
+	p := filepath.Join(absLogDir, name)
+	abs, err := filepath.Abs(p)
+	if err != nil || !strings.HasPrefix(abs, absLogDir+string(filepath.Separator)) {
+		return nil, fmt.Errorf("invalid log file path")
+	}
+	f, err := os.Open(abs) // #nosec G304 -- abs validated above: same-dir prefix check
 	if err != nil {
 		return nil, err
 	}

@@ -760,17 +760,15 @@ export async function browseCronRepos() {
 }
 
 export async function createCron() {
-  state.cronActionBusy = "create";
-  renderCron();
   let form;
   try {
     form = readCronForm();
   } catch (err) {
-    state.cronActionBusy = "";
-    renderCron();
     showNotice("Invalid Schedule", err.message);
     return;
   }
+  state.cronActionBusy = "create";
+  renderCron();
   const { root, editingId, payload } = form;
   try {
     if (editingId > 0) {

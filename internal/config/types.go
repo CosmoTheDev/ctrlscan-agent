@@ -116,7 +116,7 @@ type ControlPlaneConfig struct {
 	URL string `mapstructure:"url" json:"url"`
 	// APIKey is the Bearer token issued by ctrlscan.com after registration.
 	// Store this carefully — it authenticates this agent to the control plane.
-	APIKey string `mapstructure:"api_key" json:"api_key"`
+	APIKey string `mapstructure:"api_key" json:"api_key"` // #nosec G101 -- config field, not a hardcoded credential
 	// AgentKey is the stable public identifier for this agent on ctrlscan.com.
 	AgentKey string `mapstructure:"agent_key" json:"agent_key"`
 	// DisplayName is the human-readable name shown on ctrlscan.com.
@@ -168,7 +168,7 @@ type EmailNotifyConfig struct {
 	SMTPHost string `mapstructure:"smtp_host" json:"smtp_host"`
 	SMTPPort int    `mapstructure:"smtp_port" json:"smtp_port"`
 	Username string `mapstructure:"username"  json:"username"`
-	Password string `mapstructure:"password"  json:"password"`
+	Password string `mapstructure:"password"  json:"password"` // #nosec G101 -- config field, not a hardcoded credential
 	From     string `mapstructure:"from"      json:"from"`
 	To       string `mapstructure:"to"        json:"to"`
 	UseTLS   bool   `mapstructure:"use_tls"   json:"use_tls"`
@@ -177,5 +177,5 @@ type EmailNotifyConfig struct {
 // WebhookNotifyConfig holds generic HTTP webhook settings.
 type WebhookNotifyConfig struct {
 	URL    string `mapstructure:"url"    json:"url"`
-	Secret string `mapstructure:"secret" json:"secret"` // HMAC-SHA256 signing key
+	Secret string `mapstructure:"secret" json:"secret"` // HMAC-SHA256 signing key // #nosec G101 -- config field, not a hardcoded credential
 }

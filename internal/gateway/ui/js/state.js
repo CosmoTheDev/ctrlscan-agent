@@ -138,6 +138,8 @@ export const state = {
     skipEventCount: 0,
     latestSummary: null,
   },
+  // Heartbeat monitor status from GET /api/agent/health and "agent.health" SSE events.
+  agentHealth: null,
 };
 
 /**

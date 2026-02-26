@@ -110,6 +110,7 @@ Config lives at `~/.ctrlscan/config.json`. Manage it with:
 ```bash
 ctrlscan config show    # view current config (secrets redacted)
 ctrlscan config edit    # open in $EDITOR
+ctrlscan config edit-ui # interactive tabular configuration editor
 ctrlscan config path    # print config file path
 ```
 
@@ -143,6 +144,7 @@ ctrlscan ui          Terminal dashboard
 ctrlscan doctor      Verify tools and credentials
 ctrlscan repo        Manage watchlists
 ctrlscan config      View/edit configuration
+ctrlscan config edit-ui Interactive tabular configuration editor
 ```
 
 ## Requirements

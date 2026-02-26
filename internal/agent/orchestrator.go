@@ -31,6 +31,7 @@ type Orchestrator struct {
 	pendingTrigger              *TriggerRequest
 	prTriggerCh                 chan struct{}
 	workerStates                map[string]WorkerStatus
+	aiProvider                  ai.AIProvider
 }
 
 // OrchestratorOptions controls loop behavior for different runtimes (CLI agent vs gateway).
@@ -42,6 +43,12 @@ type OrchestratorOptions struct {
 	OnRepoSkipped      func(payload map[string]any)
 	OnWorkerStatus     func(payload map[string]any)
 	OnRemediationEvent func(eventType string, payload map[string]any)
+	// OnFixQueued is called after a fix is successfully enqueued in fix_queue.
+	// repoKey is "owner/repo", findingID is the stringified finding ID, severity is the finding severity.
+	OnFixQueued func(repoKey, findingID, severity string)
+	// OnPROpened is called after a pull request is successfully created.
+	// repoKey is "owner/repo", prURL is the URL of the newly created PR.
+	OnPROpened func(repoKey, prURL string)
 }
 
 // WorkerStatus reports what a background worker is doing right now.
@@ -200,6 +207,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("initialising AI provider: %w", err)
 	}
+	o.mu.Lock()
+	o.aiProvider = aiProvider
+	o.mu.Unlock()
 	if !aiProvider.IsAvailable(ctx) {
 		if o.cfg.AI.Provider != "" && o.cfg.AI.Provider != "none" {
 			slog.Warn("AI provider is not reachable — running in scan-only mode",
@@ -265,6 +275,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 func (o *Orchestrator) runPRLoop(ctx context.Context, aiProv ai.AIProvider) {
 	prAgent := NewPRAgent(o.cfg, o.db, aiProv)
+	prAgent.onPROpened = o.opts.OnPROpened
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	o.setWorkerStatus(WorkerStatus{
@@ -438,6 +449,7 @@ func (o *Orchestrator) runSweep(
 	go func() {
 		defer wg.Done()
 		fixer := NewFixerAgent(effectiveCfg, o.db, aiProvider)
+		fixer.onFixQueued = o.opts.OnFixQueued
 		fixer.Run(sweepCtx, fixQueue)
 	}()
 
@@ -596,6 +608,22 @@ func (o *Orchestrator) WorkerStatuses() []WorkerStatus {
 	return out
 }
 
+// AIProviderStatus returns the current AI provider status.
+// Returns provider name and whether fallback mode is active.
+func (o *Orchestrator) AIProviderStatus() (provider string, fallbackMode bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.aiProvider == nil {
+		return "", false
+	}
+
+	if cp, ok := o.aiProvider.(*ai.ChainProvider); ok {
+		return cp.CurrentProvider()
+	}
+
+	return o.aiProvider.Name(), false
+}
+
 func (o *Orchestrator) setWorkerStatus(ws WorkerStatus) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -737,6 +765,7 @@ func (o *Orchestrator) processOneRemediationTask(ctx context.Context, aiProv ai.
 	defer cm.Cleanup(cloneResult)
 
 	fixer := NewFixerAgent(&cfgCopy, o.db, aiProv)
+	fixer.onFixQueued = o.opts.OnFixQueued
 	fixer.progressNotify = func(ev remediationProgressEvent) {
 		action := "generating fixes"
 		if ev.PhaseLabel != "" {

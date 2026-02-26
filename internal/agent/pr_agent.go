@@ -23,6 +23,9 @@ type PRAgent struct {
 	cfg *config.Config
 	db  database.DB
 	ai  aiPkg.AIProvider
+	// onPROpened is called after a pull request is successfully created.
+	// repoKey is "owner/repo", prURL is the URL of the newly created PR.
+	onPROpened func(repoKey, prURL string)
 }
 
 // NewPRAgent creates a PRAgent.
@@ -241,6 +244,11 @@ func (a *PRAgent) createPR(ctx context.Context, fix models.FixQueue) error {
 		pr.Number, pr.URL, now, fix.ID,
 	); err != nil {
 		slog.Warn("Failed to update fix_queue", "error", err)
+	}
+
+	if a.onPROpened != nil {
+		repoKey := fmt.Sprintf("%s/%s", job.Owner, job.Repo)
+		a.onPROpened(repoKey, pr.URL)
 	}
 
 	// In semi/auto mode: open browser.

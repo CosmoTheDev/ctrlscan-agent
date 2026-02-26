@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -60,8 +59,8 @@ func NewOllama(cfg config.AIConfig) (*OllamaProvider, error) {
 		client:       &http.Client{Timeout: timeout},
 		maxAttempts:  maxAttempts,
 		retryBackoff: retryBackoff,
-		debug:        envBool("CTRLSCAN_OLLAMA_DEBUG"),
-		debugPrompts: envBool("CTRLSCAN_OLLAMA_DEBUG_PROMPTS"),
+		debug:        isDebug() || getLegacyDebug("ollama"),
+		debugPrompts: isDebugPrompts() || getLegacyDebugPrompts("ollama"),
 	}, nil
 }
 
@@ -79,7 +78,9 @@ func (o *OllamaProvider) IsAvailable(ctx context.Context) bool {
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			slog.Debug("closing Ollama tags response body failed", "error", closeErr)
+			if o.debug {
+				slog.Debug("closing Ollama tags response body failed", "error", closeErr)
+			}
 		}
 	}()
 	return resp.StatusCode == http.StatusOK
@@ -339,9 +340,4 @@ func normalizeLocalOllamaBaseURL(raw string) (string, error) {
 	}
 
 	return "", fmt.Errorf("Ollama URL must point to localhost or a loopback address")
-}
-
-func envBool(key string) bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
-	return v == "1" || v == "true" || v == "yes" || v == "on"
 }

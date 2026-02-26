@@ -62,6 +62,7 @@ func init() {
 		repoCmd,
 		configCmd,
 		doctorCmd,
+		registerCmd,
 	)
 }
 

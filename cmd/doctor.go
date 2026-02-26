@@ -9,7 +9,9 @@ import (
 
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/ai"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/controlplane"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/database"
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/notify"
 	"github.com/spf13/cobra"
 )
 
@@ -66,6 +68,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Println("disabled (scan-only mode — run 'ctrlscan onboard' to enable AI features)")
 	case cfg.AI.OpenAIKey == "" && cfg.AI.Provider == "openai":
 		fmt.Println("WARN (OpenAI key missing — run 'ctrlscan onboard')")
+		allOK = false
+	case cfg.AI.AnthropicKey == "" && cfg.AI.Provider == "anthropic":
+		fmt.Println("WARN (Anthropic key missing — run 'ctrlscan onboard')")
 		allOK = false
 	default:
 		provider, err := ai.New(cfg.AI)
@@ -141,6 +146,53 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			fmt.Println("NOT RUNNING (optional)")
 		} else {
 			fmt.Printf("OK (v%s)\n", string(out))
+		}
+	}
+
+	// Check control plane (optional)
+	fmt.Println()
+	fmt.Println("Control plane:")
+	fmt.Print("  ctrlscan.com ........... ")
+	if !cfg.ControlPlane.Enabled {
+		fmt.Println(dimStyle.Render("disabled (run 'ctrlscan register' to connect)"))
+	} else {
+		cpCtx, cpCancel := context.WithTimeout(ctx, 8*time.Second)
+		client := controlplane.New(cfg.ControlPlane)
+		info, err := client.Ping(cpCtx)
+		cpCancel()
+		if err != nil {
+			fmt.Printf("FAIL (%s)\n", err)
+			allOK = false
+		} else {
+			fmt.Printf("OK (agent: %s / %s)\n", info.DisplayName, info.AgentKey)
+		}
+		allowlistCount := len(cfg.ControlPlane.SubmitAllowlist)
+		if allowlistCount == 0 {
+			fmt.Println(warnStyle.Render("  WARN: submit_allowlist is empty — no repos will be submitted even though control plane is enabled."))
+			fmt.Println(dimStyle.Render("        Add repos via: ctrlscan config edit → controlplane.submit_allowlist"))
+		} else {
+			fmt.Printf("  Submit allowlist:    %d entr%s\n", allowlistCount, map[bool]string{true: "y", false: "ies"}[allowlistCount == 1])
+		}
+	}
+
+	// Check notification channels
+	fmt.Println()
+	fmt.Println("Notification channels:")
+	notifier := notify.NewDispatcher(cfg.Notify)
+	if !notifier.IsAnyConfigured() {
+		fmt.Println(dimStyle.Render("  (none configured — add notify.slack/telegram/email/webhook to config)"))
+	} else {
+		if cfg.Notify.Slack.WebhookURL != "" {
+			fmt.Println("  Slack         configured")
+		}
+		if cfg.Notify.Telegram.BotToken != "" {
+			fmt.Println("  Telegram      configured")
+		}
+		if cfg.Notify.Email.SMTPHost != "" {
+			fmt.Printf("  Email         configured (to: %s)\n", cfg.Notify.Email.To)
+		}
+		if cfg.Notify.Webhook.URL != "" {
+			fmt.Println("  Webhook       configured")
 		}
 	}
 

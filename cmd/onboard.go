@@ -52,6 +52,11 @@ var warnStyle = lipgloss.NewStyle().
 var dimStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("#6B7280"))
 
+const (
+	zaiCodingEndpoint  = "https://api.z.ai/api/coding/paas/v4"
+	zaiGeneralEndpoint = "https://api.z.ai/api/paas/v4"
+)
+
 func runOnboard(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	_ = ctx
@@ -82,6 +87,8 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		aiProviderOpenAI    = "openai"
 		aiProviderOllama    = "ollama"
 		aiProviderLMStudio  = "lmstudio"
+		aiProviderAnthropic = "anthropic"
+		aiProviderZAI       = "zai"
 		customModelSentinel = "__custom__"
 	)
 
@@ -95,6 +102,10 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		} else {
 			aiProviderChoice = aiProviderOpenAI
 		}
+	case "anthropic":
+		aiProviderChoice = aiProviderAnthropic
+	case "zai":
+		aiProviderChoice = aiProviderZAI
 	default:
 		aiProviderChoice = aiProviderNone
 	}
@@ -102,6 +113,14 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	var openAIKey string
 	if cfg.AI.OpenAIKey != "" {
 		openAIKey = cfg.AI.OpenAIKey
+	}
+	var anthropicKey string
+	if cfg.AI.AnthropicKey != "" {
+		anthropicKey = cfg.AI.AnthropicKey
+	}
+	var zaiKey string
+	if cfg.AI.ZAIKey != "" {
+		zaiKey = cfg.AI.ZAIKey
 	}
 	var openAIBaseURL string
 	if cfg.AI.BaseURL != "" {
@@ -121,7 +140,14 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	}
 	optimizeForLocal := cfg.AI.OptimizeForLocal
 
-	var aiModel string = "gpt-4o"
+	aiModelDefault := "gpt-4o"
+	if aiProviderChoice == aiProviderAnthropic {
+		aiModelDefault = "claude-sonnet-4-6"
+	}
+	if aiProviderChoice == aiProviderZAI {
+		aiModelDefault = "glm-4.7"
+	}
+	var aiModel string = aiModelDefault
 	if cfg.AI.Model != "" {
 		aiModel = cfg.AI.Model
 	}
@@ -144,10 +170,12 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("AI provider").
-				Description("Choose OpenAI, a local Ollama server, or LM Studio (OpenAI-compatible local endpoint).").
+				Description("Choose OpenAI, Anthropic Claude, Z.AI, a local Ollama server, or LM Studio.").
 				Options(
 					huh.NewOption("Scan-only (disable AI triage/fixes/PR generation)", aiProviderNone),
 					huh.NewOption("OpenAI API", aiProviderOpenAI),
+					huh.NewOption("Anthropic Claude (claude-sonnet-4-6 / opus)", aiProviderAnthropic),
+					huh.NewOption("Z.AI (glm-5)", aiProviderZAI),
 					huh.NewOption("Ollama (local)", aiProviderOllama),
 					huh.NewOption("LM Studio (local OpenAI-compatible endpoint)", aiProviderLMStudio),
 				).
@@ -234,6 +262,140 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 		} else {
 			cfg.AI.Provider = ""
 			cfg.AI.OpenAIKey = ""
+			cfg.AI.BaseURL = ""
+			cfg.AI.OptimizeForLocal = false
+			fmt.Println(dimStyle.Render("  Scan-only mode selected. Add AI later by re-running 'ctrlscan onboard'."))
+			fmt.Println()
+		}
+
+	case aiProviderAnthropic:
+		var anthropicModelChoice string
+		switch aiModel {
+		case "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001":
+			anthropicModelChoice = aiModel
+		default:
+			anthropicModelChoice = "claude-sonnet-4-6"
+		}
+		anthropicForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Anthropic API Key").
+					Description("Get one at console.anthropic.com → API Keys.").
+					Placeholder("sk-ant-...").
+					EchoMode(huh.EchoModePassword).
+					Value(&anthropicKey),
+				huh.NewSelect[string]().
+					Title("Default model").
+					Description("Choose the Claude model to use for triage and fix generation.").
+					Options(
+						huh.NewOption("claude-opus-4-6 (most capable)", "claude-opus-4-6"),
+						huh.NewOption("claude-sonnet-4-6 (balanced — recommended)", "claude-sonnet-4-6"),
+						huh.NewOption("claude-haiku-4-5-20251001 (fastest)", "claude-haiku-4-5-20251001"),
+					).
+					Value(&anthropicModelChoice),
+			),
+		)
+		if err := anthropicForm.Run(); err != nil {
+			return err
+		}
+		aiModel = anthropicModelChoice
+
+		if strings.TrimSpace(anthropicKey) != "" {
+			cfg.AI.Provider = "anthropic"
+			cfg.AI.AnthropicKey = strings.TrimSpace(anthropicKey)
+			cfg.AI.OpenAIKey = ""
+			cfg.AI.BaseURL = ""
+			cfg.AI.Model = aiModel
+			cfg.AI.OptimizeForLocal = false
+			reportAIProbe(ctx, cfg.AI, "Anthropic")
+			fmt.Println(successStyle.Render("  AI enabled — Anthropic Claude configured for triage, fixes, and PR creation."))
+			fmt.Println()
+		} else {
+			cfg.AI.Provider = ""
+			cfg.AI.AnthropicKey = ""
+			cfg.AI.BaseURL = ""
+			cfg.AI.OptimizeForLocal = false
+			fmt.Println(dimStyle.Render("  Scan-only mode selected. Add AI later by re-running 'ctrlscan onboard'."))
+			fmt.Println()
+		}
+
+	case aiProviderZAI:
+		var zaiModelChoice string
+		zaiModels := []string{
+			"glm-5", "glm-4.7", "glm-4.7-chat", "glm-4.7-flash",
+			"glm-4", "glm-3-turbo",
+		}
+		foundCurrent := false
+		for _, name := range zaiModels {
+			if name == aiModel {
+				foundCurrent = true
+				break
+			}
+		}
+		if foundCurrent {
+			zaiModelChoice = aiModel
+		} else {
+			zaiModelChoice = "glm-4.7"
+		}
+		var zaiBaseURL string = zaiCodingEndpoint
+		if cfg.AI.BaseURL != "" {
+			zaiBaseURL = cfg.AI.BaseURL
+		}
+		zaiModelOptions := make([]huh.Option[string], 0, len(zaiModels))
+		for _, model := range zaiModels {
+			desc := ""
+			switch model {
+			case "glm-5":
+				desc = "most capable (recommended)"
+			case "glm-4.7":
+				desc = "balanced - your current model"
+			case "glm-4.7-chat":
+				desc = "balanced (chat-optimized)"
+			case "glm-4.7-flash":
+				desc = "fast response time"
+			case "glm-4":
+				desc = "capable"
+			case "glm-3-turbo":
+				desc = "fastest / lightweight"
+			}
+			label := model
+			if desc != "" {
+				label = fmt.Sprintf("%s (%s)", model, desc)
+			}
+			zaiModelOptions = append(zaiModelOptions, huh.NewOption(label, model))
+		}
+		zaiForm := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Z.AI API Key").
+					Description("Get one at open.z.ai → API Keys. CLM Coding Plan is recommended.").
+					Placeholder("Your API Key").
+					EchoMode(huh.EchoModePassword).
+					Value(&zaiKey),
+				huh.NewSelect[string]().
+					Title("Default model").
+					Description("Choose to Z.AI model to use for triage and fix generation.").
+					Options(zaiModelOptions...).
+					Value(&zaiModelChoice),
+			),
+		)
+		if err := zaiForm.Run(); err != nil {
+			return err
+		}
+		aiModel = zaiModelChoice
+
+		if strings.TrimSpace(zaiKey) != "" {
+			cfg.AI.Provider = "zai"
+			cfg.AI.ZAIKey = strings.TrimSpace(zaiKey)
+			cfg.AI.Model = aiModel
+			cfg.AI.BaseURL = zaiBaseURL
+			cfg.AI.OptimizeForLocal = false
+			reportAIProbe(ctx, cfg.AI, "Z.AI")
+			fmt.Println(successStyle.Render("  AI enabled — Z.AI configured for triage, fixes, and PR creation."))
+			fmt.Println()
+		} else {
+			cfg.AI.Provider = ""
+			cfg.AI.ZAIKey = ""
 			cfg.AI.BaseURL = ""
 			cfg.AI.OptimizeForLocal = false
 			fmt.Println(dimStyle.Render("  Scan-only mode selected. Add AI later by re-running 'ctrlscan onboard'."))

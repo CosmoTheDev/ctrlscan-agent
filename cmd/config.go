@@ -27,6 +27,9 @@ var configShowCmd = &cobra.Command{
 		if cfg.AI.OpenAIKey != "" {
 			cfg.AI.OpenAIKey = "sk-***"
 		}
+		if cfg.AI.AnthropicKey != "" {
+			cfg.AI.AnthropicKey = "sk-ant-***"
+		}
 		for i := range cfg.Git.GitHub {
 			if cfg.Git.GitHub[i].Token != "" {
 				cfg.Git.GitHub[i].Token = "ghp-***"
@@ -41,6 +44,19 @@ var configShowCmd = &cobra.Command{
 			if cfg.Git.Azure[i].Token != "" {
 				cfg.Git.Azure[i].Token = "***"
 			}
+		}
+		if cfg.ControlPlane.APIKey != "" {
+			cfg.ControlPlane.APIKey = "ctrlscan-***"
+		}
+		// Notify channel secrets
+		if cfg.Notify.Telegram.BotToken != "" {
+			cfg.Notify.Telegram.BotToken = "tg-***"
+		}
+		if cfg.Notify.Email.Password != "" {
+			cfg.Notify.Email.Password = "***"
+		}
+		if cfg.Notify.Webhook.Secret != "" {
+			cfg.Notify.Webhook.Secret = "***"
 		}
 
 		enc := json.NewEncoder(os.Stdout)
@@ -75,8 +91,8 @@ var configEditCmd = &cobra.Command{
 			editor = "nano"
 		}
 		fmt.Printf("Opening %s with %s...\n", p, editor)
-			// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-			c := exec.Command(editor, p)
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+		c := exec.Command(editor, p)
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
@@ -85,5 +101,5 @@ var configEditCmd = &cobra.Command{
 }
 
 func init() {
-	configCmd.AddCommand(configShowCmd, configPathCmd, configEditCmd)
+	configCmd.AddCommand(configShowCmd, configPathCmd, configEditCmd, configUICmd)
 }

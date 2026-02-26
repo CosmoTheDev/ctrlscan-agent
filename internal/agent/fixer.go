@@ -28,6 +28,9 @@ type FixerAgent struct {
 	db             database.DB
 	ai             aiPkg.AIProvider
 	progressNotify func(remediationProgressEvent)
+	// onFixQueued is called after a fix is successfully inserted into fix_queue.
+	// repoKey is "owner/repo", findingID is the finding ref string, severity is the lowercased severity.
+	onFixQueued func(repoKey, findingID, severity string)
 }
 
 type aiRemediationOutcome struct {
@@ -799,6 +802,39 @@ func (f *FixerAgent) resolveMinFixConfidence() float64 {
 	return v
 }
 
+func (f *FixerAgent) resolveSeverityConfidenceThreshold(severity string) float64 {
+	raw := strings.TrimSpace(os.Getenv("CTRLSCAN_AI_MIN_FIX_CONFIDENCE_BY_SEVERITY"))
+	if raw != "" {
+		thresholds := make(map[string]float64)
+		pairs := strings.Split(raw, ",")
+		for _, pair := range pairs {
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) == 2 {
+				k := strings.TrimSpace(strings.ToLower(kv[0]))
+				v, err := strconv.ParseFloat(strings.TrimSpace(kv[1]), 64)
+				if err == nil && v >= 0 && v <= 1 {
+					thresholds[k] = v
+				}
+			}
+		}
+		if t, ok := thresholds[severity]; ok {
+			return t
+		}
+	}
+
+	defaultThresholds := map[string]float64{
+		"critical": 0.6,
+		"high":     0.4,
+		"medium":   0.2,
+		"low":      0.1,
+		"unknown":  0.2,
+	}
+	if t, ok := defaultThresholds[severity]; ok {
+		return t
+	}
+	return 0.2
+}
+
 func chunkFindings(findings []models.FindingSummary, size int) [][]models.FindingSummary {
 	if size <= 0 || len(findings) == 0 {
 		return nil
@@ -1011,10 +1047,20 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 	}
 
 	minConfidence := f.resolveMinFixConfidence()
-	if fixResult.Confidence < minConfidence {
+
+	requiredConfidence := minConfidence
+
+	severityConfidenceThreshold := f.resolveSeverityConfidenceThreshold(string(finding.Severity))
+	if severityConfidenceThreshold > 0 {
+		requiredConfidence = severityConfidenceThreshold
+	}
+
+	if fixResult.Confidence < requiredConfidence {
 		args := append(remediationJobLogFields(job),
 			"finding_id", finding.ID,
+			"severity", finding.Severity,
 			"confidence", fixResult.Confidence,
+			"required_confidence", requiredConfidence,
 			"min_confidence", minConfidence,
 		)
 		slog.Info("Skipping low-confidence fix", args...)
@@ -1077,6 +1123,11 @@ func (f *FixerAgent) generateAndQueueFix(ctx context.Context, finding models.Fin
 		"status", status,
 	)
 	slog.Info("Fix queued", args...)
+
+	if f.onFixQueued != nil {
+		repoKey := fmt.Sprintf("%s/%s", job.Owner, job.Repo)
+		f.onFixQueued(repoKey, finding.ID, strings.ToLower(string(finding.Severity)))
+	}
 
 	// In semi mode: open browser to show the pending fix.
 	if f.cfg.Agent.Mode == "semi" {

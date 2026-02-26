@@ -44,14 +44,51 @@ export function renderSweepSummaryCard() {
 export function renderHealthPill() {
   const pill = document.getElementById("healthPill");
   const st = state.status;
+  const hb = state.agentHealth;
   if (!st) {
     pill.textContent = "Health: unknown";
     pill.className = "pill pill-idle";
     return;
   }
-  const health = st.running ? (st.paused ? "paused" : "ok") : "idle";
+  // Prefer heartbeat status when available; fall back to running flag.
+  const hbStatus = hb?.status;
+  let health, pillClass;
+  if (hbStatus === "alive") {
+    health = "active"; pillClass = "pill-ok";
+  } else if (hbStatus === "stuck") {
+    health = "stuck"; pillClass = "pill-warn";
+  } else if (hbStatus === "dead") {
+    health = "dead"; pillClass = "pill-danger";
+  } else if (st.paused) {
+    health = "paused"; pillClass = "pill-warn";
+  } else if (st.running) {
+    health = "ok"; pillClass = "pill-ok";
+  } else {
+    health = "idle"; pillClass = "pill-idle";
+  }
   pill.textContent = `Health: ${health} • workers ${st.workers ?? "?"}`;
-  pill.className = health === "ok" ? "pill pill-ok" : health === "paused" ? "pill pill-warn" : "pill pill-idle";
+  pill.className = `pill ${pillClass}`;
+}
+
+function heartbeatCardHtml() {
+  const hb = state.agentHealth;
+  const st = state.status;
+  if (!hb && !st) return "";
+  const status = hb?.status ?? (st?.running ? "alive" : "idle");
+  const dot = { alive: "🟢", idle: "⚪", stuck: "🟡", dead: "🔴" }[status] ?? "⚪";
+  const label = { alive: "Active", idle: "Idle", stuck: "Stuck", dead: "Unresponsive" }[status] ?? status;
+  const stuckSecs = hb?.stuck_for_seconds;
+  const stuckNote = stuckSecs ? ` (${Math.round(stuckSecs / 60)}m)` : "";
+  const msg = hb?.message ? `<div class="muted" style="font-size:0.8em;margin-top:4px">${escapeHtml(hb.message)}</div>` : "";
+  const restartBtn = status === "stuck"
+    ? `<button class="btn btn-secondary" style="margin-top:6px;font-size:0.8em" id="hbRestart">Restart Agent</button>`
+    : "";
+  return `
+    <div class="card" style="padding:10px 14px">
+      <div class="metric-label">Agent Heartbeat</div>
+      <div class="metric-value" style="font-size:1.1em">${dot} ${escapeHtml(label)}${escapeHtml(stuckNote)}</div>
+      ${msg}${restartBtn}
+    </div>`;
 }
 
 export function renderOverview() {
@@ -67,6 +104,9 @@ export function renderOverview() {
       <div class="card card-accent"><div class="metric-label">Queued Repos</div><div class="metric-value">${st.queued_repos ?? 0}</div></div>
       <div class="card card-purple"><div class="metric-label">Active Jobs</div><div class="metric-value">${st.active_jobs ?? 0}</div></div>
       <div class="card card-orange"><div class="metric-label">Pending Fixes</div><div class="metric-value">${st.pending_fixes ?? 0}</div></div>
+    </div>
+    <div class="grid cols-1" style="margin-top:8px">
+      ${heartbeatCardHtml()}
     </div>
     <div class="grid cols-4" style="margin-top:12px">
       <div class="card card-high" id="ovCardHigh" style="cursor:pointer" title="View High severity vulnerabilities"><div class="metric-label">High (Aggregate)</div><div class="metric-value high">${sum.high ?? 0}</div></div>
@@ -107,6 +147,9 @@ export function renderOverview() {
     </div>
   `
   );
+  root.querySelector("#hbRestart")?.addEventListener("click", async () => {
+    await fetch("/api/agent/trigger", { method: "POST" });
+  });
   root.querySelector("#ovTrigger")?.addEventListener("click", openTriggerModal);
   root.querySelector("#ovStop")?.addEventListener("click", stopSweep);
   root.querySelector("#ovPauseResume")?.addEventListener("click", async () => {

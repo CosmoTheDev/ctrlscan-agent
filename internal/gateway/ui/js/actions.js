@@ -59,6 +59,11 @@ export function pushEvent(evt) {
     renderScans();
     scheduleLiveRefresh({ jobs: true, workers: true, detail: true });
   }
+  if (evt.type === "agent.health") {
+    state.agentHealth = evt.payload || null;
+    renderOverview();
+    renderHealthPill();
+  }
   renderEvents();
 }
 
@@ -844,6 +849,16 @@ export async function refreshAgent() {
   renderAgents();
 }
 
+export async function refreshAgentHealth() {
+  try {
+    state.agentHealth = await api("/api/agent/health");
+    renderOverview();
+    renderHealthPill();
+  } catch (_) {
+    // non-fatal — heartbeat is informational
+  }
+}
+
 export async function refreshAgentWorkers() {
   state.agentWorkers = await api("/api/agent/workers");
   renderAgents();
@@ -1313,6 +1328,7 @@ export async function refreshAll() {
       refreshAgent(),
       refreshAgentWorkers(),
       refreshRemediation(),
+      refreshAgentHealth(),
     ]);
     if (state.selectedJobId) {
       await selectJob(state.selectedJobId, {

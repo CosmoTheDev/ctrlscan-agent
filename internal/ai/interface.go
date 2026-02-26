@@ -2,7 +2,7 @@ package ai
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
 	"github.com/CosmoTheDev/ctrlscan-agent/models"
@@ -98,18 +98,31 @@ type PRDescription struct {
 // New returns the configured AIProvider.
 // If no provider or API key is set, it returns a NoopProvider — callers should
 // check IsAvailable() before using any AI features.
+// If fallback providers are configured, returns a ChainProvider that tries
+// them in order on failure with circuit breaker protection.
 func New(cfg config.AIConfig) (AIProvider, error) {
-	switch cfg.Provider {
-	case "", "none":
-		return &NoopProvider{}, nil
-	case "openai":
-		if cfg.OpenAIKey == "" {
-			return &NoopProvider{}, nil
-		}
-		return NewOpenAI(cfg)
-	case "ollama":
-		return NewOllama(cfg)
-	default:
-		return nil, fmt.Errorf("unsupported AI provider %q (supported: openai, ollama)", cfg.Provider)
+	primary, err := newSingle(cfg.Provider, cfg)
+	if err != nil {
+		return nil, err
 	}
+
+	if len(cfg.Fallback) == 0 {
+		return primary, nil
+	}
+
+	chain := []AIProvider{primary}
+	for _, fallbackProvider := range cfg.Fallback {
+		p, err := newSingle(fallbackProvider, cfg)
+		if err != nil {
+			slog.Warn("ai: failed to create fallback provider, skipping", "provider", fallbackProvider, "error", err)
+			continue
+		}
+		chain = append(chain, p)
+	}
+
+	if len(chain) == 1 {
+		return primary, nil
+	}
+
+	return NewChain(chain), nil
 }

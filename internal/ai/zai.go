@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -17,10 +16,14 @@ import (
 	"github.com/CosmoTheDev/ctrlscan-agent/models"
 )
 
-const defaultOpenAIBase = "https://api.openai.com/v1"
+const (
+	zaiCodingEndpoint  = "https://api.z.ai/api/coding/paas/v4"
+	zaiGeneralEndpoint = "https://api.z.ai/api/paas/v4"
+	zaiDefaultModel    = "glm-5"
+)
 
-// OpenAIProvider implements AIProvider using the OpenAI REST API.
-type OpenAIProvider struct {
+// ZAIProvider implements AIProvider using Z.AI's OpenAI-compatible API.
+type ZAIProvider struct {
 	apiKey       string
 	model        string
 	baseURL      string
@@ -29,44 +32,38 @@ type OpenAIProvider struct {
 	debugPrompts bool
 }
 
-// NewOpenAI creates an OpenAIProvider from cfg.
-func NewOpenAI(cfg config.AIConfig) (*OpenAIProvider, error) {
-	base := cfg.BaseURL
-	if base == "" {
-		base = defaultOpenAIBase
-	}
-	u, err := url.Parse(base)
-	if err != nil {
-		return nil, fmt.Errorf("invalid OpenAI base URL: %w", err)
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return nil, fmt.Errorf("invalid OpenAI base URL scheme %q", u.Scheme)
-	}
+// NewZAI creates a ZAIProvider from cfg.
+func NewZAI(cfg config.AIConfig) (*ZAIProvider, error) {
 	model := cfg.Model
 	if model == "" {
-		model = "gpt-4o"
+		model = zaiDefaultModel
 	}
-	return &OpenAIProvider{
-		apiKey:       cfg.OpenAIKey,
+
+	// Use coding endpoint by default for better code generation
+	base := cfg.BaseURL
+	if base == "" {
+		base = zaiCodingEndpoint
+	}
+
+	return &ZAIProvider{
+		apiKey:       cfg.ZAIKey,
 		model:        model,
 		baseURL:      strings.TrimRight(base, "/"),
 		client:       &http.Client{Timeout: 120 * time.Second},
-		debug:        isDebug() || getLegacyDebug("openai"),
-		debugPrompts: isDebugPrompts() || getLegacyDebugPrompts("openai"),
+		debug:        isDebug() || getLegacyDebug("zai"),
+		debugPrompts: isDebugPrompts() || getLegacyDebugPrompts("zai"),
 	}, nil
 }
 
-func (o *OpenAIProvider) Name() string { return "openai" }
+func (z *ZAIProvider) Name() string { return "zai" }
 
-func (o *OpenAIProvider) IsAvailable(ctx context.Context) bool {
-	// Probe the models endpoint.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.baseURL+"/models", nil)
+func (z *ZAIProvider) IsAvailable(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, z.baseURL+"/models", nil)
 	if err != nil {
 		return false
 	}
-	req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	// #nosec G107,G704 -- baseURL is loaded from trusted local config and validated in NewOpenAI.
-	resp, err := o.client.Do(req)
+	req.Header.Set("Authorization", "Bearer "+z.apiKey)
+	resp, err := z.client.Do(req)
 	if err != nil {
 		return false
 	}
@@ -74,8 +71,31 @@ func (o *OpenAIProvider) IsAvailable(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// TriageFindings sends all findings to GPT and asks it to rank and summarise them.
-func (o *OpenAIProvider) TriageFindings(ctx context.Context, findings []models.FindingSummary) (*TriageResult, error) {
+type zaiRequest struct {
+	Model       string   `json:"model"`
+	Messages    []zaiMsg `json:"messages"`
+	MaxTokens   int      `json:"max_tokens,omitempty"`
+	Temperature float64  `json:"temperature,omitempty"`
+}
+
+type zaiMsg struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type zaiResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+// TriageFindings sends all findings to Z.AI and asks it to rank and summarise them.
+func (z *ZAIProvider) TriageFindings(ctx context.Context, findings []models.FindingSummary) (*TriageResult, error) {
 	if len(findings) == 0 {
 		return &TriageResult{Summary: "No findings to triage."}, nil
 	}
@@ -96,18 +116,16 @@ Findings:
 
 Respond ONLY with valid JSON, no markdown code blocks.`, string(findingsJSON))
 
-	resp, err := o.complete(ctx, prompt, 2048)
+	resp, err := z.complete(ctx, prompt, 2048, 0.7)
 	if err != nil {
 		return nil, err
 	}
 
 	var result TriageResult
 	if err := json.Unmarshal([]byte(resp), &result); err != nil {
-		// Fallback: return raw summary if JSON parsing fails.
 		result.Summary = resp
 	}
 
-	// Attach original finding data to each prioritised item.
 	findingMap := make(map[string]models.FindingSummary, len(findings))
 	for _, f := range findings {
 		findingMap[f.ID] = f
@@ -121,9 +139,8 @@ Respond ONLY with valid JSON, no markdown code blocks.`, string(findingsJSON))
 	return &result, nil
 }
 
-// GenerateFix asks GPT to produce a unified diff patch for a single finding.
-func (o *OpenAIProvider) GenerateFix(ctx context.Context, req FixRequest) (*FixResult, error) {
-	// Build the file-content section of the prompt.
+// GenerateFix asks Z.AI to produce a unified diff patch for a single finding.
+func (z *ZAIProvider) GenerateFix(ctx context.Context, req FixRequest) (*FixResult, error) {
 	var fileSectionBuf strings.Builder
 	if req.FileContent != "" {
 		fmt.Fprintf(&fileSectionBuf,
@@ -152,12 +169,12 @@ PATCH FORMAT RULES (critical — git apply will reject malformed patches):
      --- a/<filepath>
      +++ b/<filepath>
 2. Hunk header MUST include real line numbers in this exact format:
-     @@ -<old_start>,<old_count> +<new_start>,<new_count> @@
+      @@ -<old_start>,<old_count> +<new_start>,<new_count> @@
    Example for a 3-line context block where you add 1 line at line 42:
-     @@ -41,3 +41,4 @@
-      context_line_before
-     +your_added_line
-      context_line_after
+      @@ -41,3 +41,4 @@
+       context_line_before
+       +your_added_line
+       context_line_after
 3. Context lines start with a single space. Added lines start with +. Removed lines start with -.
 4. Never emit bare "@@ @@" or "@@ " with no numbers.
 
@@ -177,7 +194,7 @@ Return ONLY a JSON object — no markdown fences, no extra text:
 If you cannot produce a reliable patch, set confidence < 0.5 and leave "patch" empty.`,
 		string(findingJSON), req.FilePath, req.Language, fileSectionBuf.String())
 
-	resp, err := o.complete(ctx, prompt, 2048)
+	resp, err := z.complete(ctx, prompt, 2048, 0.3)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +213,7 @@ If you cannot produce a reliable patch, set confidence < 0.5 and leave "patch" e
 }
 
 // GeneratePRDescription drafts a PR title and body from a list of fixes.
-func (o *OpenAIProvider) GeneratePRDescription(ctx context.Context, fixes []FixResult) (*PRDescription, error) {
+func (z *ZAIProvider) GeneratePRDescription(ctx context.Context, fixes []FixResult) (*PRDescription, error) {
 	if len(fixes) == 0 {
 		return &PRDescription{
 			Title: "chore(security): fix vulnerabilities",
@@ -229,7 +246,7 @@ Write a pull request with:
 
 Return ONLY valid JSON with "title" and "body" fields. No markdown code blocks.`, sb.String())
 
-	resp, err := o.complete(ctx, prompt, 1024)
+	resp, err := z.complete(ctx, prompt, 1024, 0.7)
 	if err != nil {
 		return nil, err
 	}
@@ -242,43 +259,15 @@ Return ONLY valid JSON with "title" and "body" fields. No markdown code blocks.`
 	return &desc, nil
 }
 
-// --- Internal ---
-
-type openAIRequest struct {
-	Model               string      `json:"model"`
-	Messages            []openAIMsg `json:"messages"`
-	MaxTokens           int         `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int         `json:"max_completion_tokens,omitempty"`
-}
-
-type openAIMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type openAIResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
-}
-
-func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens int) (string, error) {
-	payload := openAIRequest{
-		Model: o.model,
-		Messages: []openAIMsg{
+func (z *ZAIProvider) complete(ctx context.Context, prompt string, maxTokens int, temperature float64) (string, error) {
+	payload := zaiRequest{
+		Model: z.model,
+		Messages: []zaiMsg{
 			{Role: "system", Content: "You are an expert security engineer assisting with vulnerability remediation."},
 			{Role: "user", Content: prompt},
 		},
-	}
-	if usesMaxCompletionTokensParam(o.model) {
-		payload.MaxCompletionTokens = maxTokens
-	} else {
-		payload.MaxTokens = maxTokens
+		MaxTokens:   maxTokens,
+		Temperature: temperature,
 	}
 
 	body, err := json.Marshal(payload)
@@ -286,15 +275,16 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 		return "", fmt.Errorf("marshalling request: %w", err)
 	}
 
-	if o.debug {
-		slog.Info("OpenAI request",
-			"model", o.model,
+	if z.debug {
+		slog.Info("Z.AI request",
+			"model", z.model,
 			"max_tokens", maxTokens,
+			"temperature", temperature,
 			"prompt_chars", len(prompt),
 			"request_bytes", len(body),
 		)
-		if o.debugPrompts {
-			slog.Info("OpenAI prompt body", "prompt", prompt)
+		if z.debugPrompts {
+			slog.Info("Z.AI prompt body", "prompt", prompt)
 		}
 	}
 
@@ -303,17 +293,16 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 	var respStatus int
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			o.baseURL+"/chat/completions", bytes.NewReader(body))
+			z.baseURL+"/chat/completions", bytes.NewReader(body))
 		if err != nil {
 			return "", fmt.Errorf("creating request: %w", err)
 		}
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+		req.Header.Set("Authorization", "Bearer "+z.apiKey)
 		req.Header.Set("Content-Type", "application/json")
 
-		// #nosec G107,G704 -- baseURL is loaded from trusted local config and validated in NewOpenAI.
-		resp, err := o.client.Do(req)
+		resp, err := z.client.Do(req)
 		if err != nil {
-			return "", fmt.Errorf("calling OpenAI API: %w", err)
+			return "", fmt.Errorf("calling Z.AI API: %w", err)
 		}
 		respStatus = resp.StatusCode
 		respBody, err = io.ReadAll(resp.Body)
@@ -322,19 +311,19 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 			return "", fmt.Errorf("reading response body: %w", err)
 		}
 		if closeErr != nil {
-			slog.Debug("closing OpenAI response body", "error", closeErr)
+			slog.Debug("closing Z.AI response body", "error", closeErr)
 		}
 
 		if resp.StatusCode == http.StatusOK {
 			break
 		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxAttempts {
-			wait := openAIRetryDelay(resp.Header.Get("Retry-After"), string(respBody), attempt)
-			slog.Warn("OpenAI rate limited; retrying",
+			wait := zaiRetryDelay(resp.Header.Get("Retry-After"), string(respBody), attempt)
+			slog.Warn("Z.AI rate limited; retrying",
 				"attempt", attempt,
 				"max_attempts", maxAttempts,
 				"wait", wait.String(),
-				"model", o.model,
+				"model", z.model,
 			)
 			if err := sleepWithContext(ctx, wait); err != nil {
 				return "", err
@@ -345,56 +334,26 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 	}
 
 	if respStatus != http.StatusOK {
-		return "", fmt.Errorf("OpenAI API error %d: %s", respStatus, string(respBody))
+		return "", fmt.Errorf("Z.AI API error %d: %s", respStatus, string(respBody))
 	}
 
-	var apiResp openAIResponse
+	var apiResp zaiResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
 		return "", fmt.Errorf("parsing API response: %w", err)
 	}
 
 	if apiResp.Error != nil {
-		return "", fmt.Errorf("OpenAI error: %s", apiResp.Error.Message)
+		return "", fmt.Errorf("Z.AI error: %s", apiResp.Error.Message)
 	}
 
 	if len(apiResp.Choices) == 0 {
-		return "", fmt.Errorf("OpenAI returned no choices")
+		return "", fmt.Errorf("Z.AI returned no choices")
 	}
 
 	return strings.TrimSpace(apiResp.Choices[0].Message.Content), nil
 }
 
-func usesMaxCompletionTokensParam(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
-	switch {
-	case strings.Contains(m, "gpt-5"):
-		return true
-	case strings.Contains(m, "codex"):
-		return true
-	case strings.HasPrefix(m, "o1"),
-		strings.HasPrefix(m, "o3"),
-		strings.HasPrefix(m, "o4"):
-		return true
-	default:
-		return false
-	}
-}
-
-func sleepWithContext(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
-func openAIRetryDelay(retryAfterHeader, body string, attempt int) time.Duration {
+func zaiRetryDelay(retryAfterHeader, body string, attempt int) time.Duration {
 	if ra := strings.TrimSpace(retryAfterHeader); ra != "" {
 		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
 			return time.Duration(secs) * time.Second
@@ -418,7 +377,6 @@ func openAIRetryDelay(retryAfterHeader, body string, attempt int) time.Duration 
 			}
 		}
 	}
-	// Exponential-ish fallback with a cap.
 	d := time.Duration(attempt*attempt) * 500 * time.Millisecond
 	if d > 8*time.Second {
 		d = 8 * time.Second

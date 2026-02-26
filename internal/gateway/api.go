@@ -18,6 +18,7 @@ import (
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/agent"
 	cfgpkg "github.com/CosmoTheDev/ctrlscan-agent/internal/config"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/findings"
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/notify"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/repository"
 )
 
@@ -56,6 +57,7 @@ func buildHandler(gw *Gateway) http.Handler {
 	mux.HandleFunc("POST /api/scan", gw.handleTriggerScan)
 
 	// Agent runtime controls
+	mux.HandleFunc("GET /api/agent/health", gw.handleAgentHealth)
 	mux.HandleFunc("GET /api/agent", gw.handleAgentStatus)
 	mux.HandleFunc("POST /api/agent/preview", gw.handleAgentPreview)
 	mux.HandleFunc("POST /api/agent/trigger", gw.handleAgentTrigger)
@@ -103,6 +105,9 @@ func buildHandler(gw *Gateway) http.Handler {
 	// Config management
 	mux.HandleFunc("GET /api/config", gw.handleGetConfig)
 	mux.HandleFunc("PUT /api/config", gw.handlePutConfig)
+
+	// Notification test
+	mux.HandleFunc("POST /api/notify/test", gw.handleNotifyTest)
 
 	return mux
 }
@@ -239,17 +244,29 @@ func (gw *Gateway) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, gw.currentStatus())
 }
 
+func (gw *Gateway) handleAgentHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, gw.heartbeat.computeStatus())
+}
+
 func (gw *Gateway) handleAgentStatus(w http.ResponseWriter, r *http.Request) {
 	aiEnabled := strings.TrimSpace(gw.cfg.AI.Provider) != "" &&
 		gw.cfg.AI.Provider != "none" &&
 		((gw.cfg.AI.Provider == "openai" && gw.cfg.AI.OpenAIKey != "") || gw.cfg.AI.Provider != "openai")
+
+	status := gw.currentStatus()
+	aiProvider, aiFallbackMode := "", false
+	if gw.orch != nil {
+		aiProvider, aiFallbackMode = gw.orch.AIProviderStatus()
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            gw.currentStatus(),
+		"status":            status,
 		"mode":              gw.cfg.Agent.Mode,
 		"targets":           gw.cfg.Agent.ScanTargets,
 		"supported_targets": []string{"own_repos", "watchlist", "cve_search", "all_accessible"},
 		"ai_enabled":        aiEnabled,
-		"ai_provider":       gw.cfg.AI.Provider,
+		"ai_provider":       aiProvider,
+		"ai_fallback_mode":  aiFallbackMode,
 	})
 }
 
@@ -3041,7 +3058,9 @@ func (gw *Gateway) handleListVulnerabilities(w http.ResponseWriter, r *http.Requ
 	// Main query
 	whereStr, args := buildVulnWhere(p, "")
 
-	type countRow struct{ N int `db:"n"` }
+	type countRow struct {
+		N int `db:"n"`
+	}
 	var cnt countRow
 	countArgs := make([]any, len(args))
 	copy(countArgs, args)
@@ -3842,4 +3861,19 @@ func (gw *Gateway) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// handleNotifyTest sends a test notification through all configured channels.
+func (gw *Gateway) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
+	if !gw.notifier.IsAnyConfigured() {
+		writeError(w, http.StatusBadRequest, "no notification channels configured")
+		return
+	}
+	gw.notifier.Notify(r.Context(), notify.Event{
+		Type:     "test",
+		Title:    "ctrlscan-agent test notification",
+		Body:     "Notification delivery is working correctly.",
+		Severity: "low",
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
 }

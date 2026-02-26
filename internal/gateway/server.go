@@ -12,6 +12,7 @@ import (
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/agent"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/database"
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/notify"
 )
 
 // Gateway is the long-running daemon that combines:
@@ -26,34 +27,114 @@ type Gateway struct {
 	orch        *agent.Orchestrator
 	scheduler   *Scheduler
 	broadcaster *Broadcaster
+	notifier    *notify.Dispatcher
 
 	mu            sync.RWMutex
 	status        AgentStatus
 	lastTriggerAt string
 	startedAt     time.Time
 	paused        bool
+
+	// heartbeat tracking — updated by orchestrator callbacks, read by HeartbeatMonitor.
+	lastActivityAt time.Time
+	sweepRunning   bool
+	heartbeat      *HeartbeatMonitor
 }
 
 // New creates a Gateway. Call Start() to begin serving.
 func New(cfg *config.Config, db database.DB) *Gateway {
 	b := newBroadcaster()
+	notifier := notify.NewDispatcher(cfg.Notify)
+	// gw is not yet allocated; use a pointer so callbacks can reach it after New() returns.
+	var gwRef *Gateway
+
 	orch := agent.NewOrchestratorWithOptions(cfg, db, agent.OrchestratorOptions{
 		RunInitialSweep: false,
 		EnablePolling:   false, // gateway scans are driven by API triggers and cron schedules
 		OnSweepStarted: func(payload map[string]any) {
 			b.send(SSEEvent{Type: "sweep.started", Payload: payload})
+			if gwRef != nil {
+				gwRef.mu.Lock()
+				gwRef.lastActivityAt = time.Now()
+				gwRef.sweepRunning = true
+				gwRef.mu.Unlock()
+			}
 		},
 		OnSweepCompleted: func(payload map[string]any) {
 			b.send(SSEEvent{Type: "sweep.completed", Payload: payload})
+			if gwRef != nil {
+				gwRef.mu.Lock()
+				gwRef.lastActivityAt = time.Now()
+				gwRef.sweepRunning = false
+				gwRef.mu.Unlock()
+			}
+			// Send notification if critical or high findings were detected.
+			if notifier.IsAnyConfigured() {
+				critical, _ := payload["critical"].(int)
+				high, _ := payload["high"].(int)
+				if critical > 0 || high > 0 {
+					repo, _ := payload["repo"].(string)
+					sev := "high"
+					if critical > 0 {
+						sev = "critical"
+					}
+					notifier.Notify(context.Background(), notify.Event{
+						Type:     "critical_finding",
+						Title:    fmt.Sprintf("ctrlscan: %d critical, %d high findings in %s", critical, high, repo),
+						Body:     fmt.Sprintf("Scan completed. %d critical, %d high severity findings detected.", critical, high),
+						Severity: sev,
+						RepoKey:  repo,
+					})
+				}
+			}
 		},
 		OnRepoSkipped: func(payload map[string]any) {
 			b.send(SSEEvent{Type: "repo.skipped", Payload: payload})
+			if gwRef != nil {
+				gwRef.mu.Lock()
+				gwRef.lastActivityAt = time.Now()
+				gwRef.mu.Unlock()
+			}
 		},
 		OnWorkerStatus: func(payload map[string]any) {
 			b.send(SSEEvent{Type: "worker.status", Payload: payload})
+			if gwRef != nil {
+				gwRef.mu.Lock()
+				gwRef.lastActivityAt = time.Now()
+				gwRef.mu.Unlock()
+			}
 		},
 		OnRemediationEvent: func(eventType string, payload map[string]any) {
 			b.send(SSEEvent{Type: eventType, Payload: payload})
+			if gwRef != nil {
+				gwRef.mu.Lock()
+				gwRef.lastActivityAt = time.Now()
+				gwRef.mu.Unlock()
+			}
+		},
+		OnFixQueued: func(repoKey, findingID, severity string) {
+			if !notifier.IsAnyConfigured() {
+				return
+			}
+			notifier.Notify(context.Background(), notify.Event{
+				Type:     "fix_approved",
+				Title:    fmt.Sprintf("ctrlscan: fix queued for %s", repoKey),
+				Body:     fmt.Sprintf("A fix has been queued for finding %s (severity: %s). Review it in the ctrlscan UI.", findingID, severity),
+				Severity: severity,
+				RepoKey:  repoKey,
+			})
+		},
+		OnPROpened: func(repoKey, prURL string) {
+			if !notifier.IsAnyConfigured() {
+				return
+			}
+			notifier.Notify(context.Background(), notify.Event{
+				Type:    "pr_opened",
+				Title:   fmt.Sprintf("ctrlscan: PR opened for %s", repoKey),
+				Body:    fmt.Sprintf("A security fix pull request has been created for %s.", repoKey),
+				URL:     prURL,
+				RepoKey: repoKey,
+			})
 		},
 	})
 
@@ -63,9 +144,12 @@ func New(cfg *config.Config, db database.DB) *Gateway {
 		logDir:      "logs",
 		orch:        orch,
 		broadcaster: b,
+		notifier:    notifier,
 		startedAt:   time.Now(),
 	}
+	gw.heartbeat = newHeartbeatMonitor(gw)
 	gw.scheduler = newScheduler(db, gw.triggerSchedule, b.send)
+	gwRef = gw // wire callbacks after gw is fully constructed
 	return gw
 }
 
@@ -200,8 +284,9 @@ func (gw *Gateway) Start(ctx context.Context) error {
 		gw.broadcaster.send(SSEEvent{Type: "agent.stopped"})
 	}()
 
-	// 3. Stats ticker.
+	// 3. Stats ticker + heartbeat monitor.
 	go gw.runStatsTicker(ctx)
+	go gw.heartbeat.run(ctx)
 
 	// 4. HTTP server.
 	srv := &http.Server{
@@ -251,6 +336,11 @@ func (gw *Gateway) refreshStatus(ctx context.Context) {
 	_ = gw.db.Get(ctx, &active, "SELECT COUNT(*) AS n FROM scan_jobs WHERE status = 'running'")
 	_ = gw.db.Get(ctx, &pending, "SELECT COUNT(*) AS n FROM fix_queue WHERE status = 'pending'")
 
+	aiProvider, aiFallbackMode := "", false
+	if gw.orch != nil {
+		aiProvider, aiFallbackMode = gw.orch.AIProviderStatus()
+	}
+
 	gw.mu.Lock()
 	gw.status.QueuedRepos = queued.N
 	gw.status.ActiveJobs = active.N
@@ -259,6 +349,8 @@ func (gw *Gateway) refreshStatus(ctx context.Context) {
 	gw.status.Workers = gw.cfg.Agent.Workers
 	gw.status.UptimeSeconds = int64(time.Since(gw.startedAt).Seconds())
 	gw.status.LastTriggerAt = gw.lastTriggerAt
+	gw.status.AIProvider = aiProvider
+	gw.status.AIFallbackMode = aiFallbackMode
 	snap := gw.status
 	gw.mu.Unlock()
 

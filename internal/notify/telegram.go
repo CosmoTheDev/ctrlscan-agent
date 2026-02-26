@@ -49,7 +49,7 @@ func (t *TelegramChannel) Send(ctx context.Context, evt Event) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := t.client.Do(req)
+	resp, err := t.client.Do(req) // #nosec G107 -- URL is constructed from the Telegram API base + user-configured bot token
 	if err != nil {
 		return err
 	}

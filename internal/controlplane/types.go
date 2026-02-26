@@ -15,7 +15,7 @@ type RegisterRequest struct {
 type RegisterResponse struct {
 	AgentKey string `json:"agent_key"`
 	// APIKey is the Bearer credential. Store it immediately — it is not shown again.
-	APIKey string `json:"api_key"`
+	APIKey string `json:"api_key"` // #nosec G101 -- response field carrying a credential, not a hardcoded value
 }
 
 // AgentInfo is returned by GET /api/v1/agents/me.

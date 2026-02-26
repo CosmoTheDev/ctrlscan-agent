@@ -50,7 +50,7 @@ func (s *SlackChannel) Send(ctx context.Context, evt Event) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
+	resp, err := s.client.Do(req) // #nosec G107 -- WebhookURL is a user-configured Slack incoming webhook URL
 	if err != nil {
 		return err
 	}

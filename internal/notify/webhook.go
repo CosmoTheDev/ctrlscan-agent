@@ -54,7 +54,7 @@ func (w *WebhookChannel) Send(ctx context.Context, evt Event) error {
 		sig := hex.EncodeToString(mac.Sum(nil))
 		req.Header.Set("X-Ctrlscan-Signature", "sha256="+sig)
 	}
-	resp, err := w.client.Do(req)
+	resp, err := w.client.Do(req) // #nosec G107 -- URL is a user-configured webhook endpoint
 	if err != nil {
 		return err
 	}

@@ -102,7 +102,7 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) ([
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
-	res, err := c.http.Do(req)
+	res, err := c.http.Do(req) // #nosec G107 -- baseURL defaults to compile-time constant; user-configured value is intentional
 	if err != nil {
 		return nil, fmt.Errorf("request to %s failed: %w", c.baseURL+path, err)
 	}

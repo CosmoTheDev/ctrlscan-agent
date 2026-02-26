@@ -42,7 +42,7 @@ func (e *EmailChannel) Send(_ context.Context, evt Event) error {
 	}
 
 	if e.cfg.UseTLS {
-		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: e.cfg.SMTPHost}) // #nosec G402 -- TLS config uses system defaults; ServerName is set for SNI
+		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: e.cfg.SMTPHost, MinVersion: tls.VersionTLS12})
 		if err != nil {
 			return fmt.Errorf("email: TLS dial: %w", err)
 		}

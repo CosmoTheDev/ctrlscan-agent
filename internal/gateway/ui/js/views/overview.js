@@ -52,19 +52,26 @@ export function renderHealthPill() {
   }
   // Prefer heartbeat status when available; fall back to running flag.
   const hbStatus = hb?.status;
-  let health, pillClass;
+  let health;
+  let pillClass;
   if (hbStatus === "alive") {
-    health = "active"; pillClass = "pill-ok";
+    health = "active";
+    pillClass = "pill-ok";
   } else if (hbStatus === "stuck") {
-    health = "stuck"; pillClass = "pill-warn";
+    health = "stuck";
+    pillClass = "pill-warn";
   } else if (hbStatus === "dead") {
-    health = "dead"; pillClass = "pill-danger";
+    health = "dead";
+    pillClass = "pill-danger";
   } else if (st.paused) {
-    health = "paused"; pillClass = "pill-warn";
+    health = "paused";
+    pillClass = "pill-warn";
   } else if (st.running) {
-    health = "ok"; pillClass = "pill-ok";
+    health = "ok";
+    pillClass = "pill-ok";
   } else {
-    health = "idle"; pillClass = "pill-idle";
+    health = "idle";
+    pillClass = "pill-idle";
   }
   pill.textContent = `Health: ${health} • workers ${st.workers ?? "?"}`;
   pill.className = `pill ${pillClass}`;
@@ -79,10 +86,13 @@ function heartbeatCardHtml() {
   const label = { alive: "Active", idle: "Idle", stuck: "Stuck", dead: "Unresponsive" }[status] ?? status;
   const stuckSecs = hb?.stuck_for_seconds;
   const stuckNote = stuckSecs ? ` (${Math.round(stuckSecs / 60)}m)` : "";
-  const msg = hb?.message ? `<div class="muted" style="font-size:0.8em;margin-top:4px">${escapeHtml(hb.message)}</div>` : "";
-  const restartBtn = status === "stuck"
-    ? `<button class="btn btn-secondary" style="margin-top:6px;font-size:0.8em" id="hbRestart">Restart Agent</button>`
+  const msg = hb?.message
+    ? `<div class="muted" style="font-size:0.8em;margin-top:4px">${escapeHtml(hb.message)}</div>`
     : "";
+  const restartBtn =
+    status === "stuck"
+      ? `<button class="btn btn-secondary" style="margin-top:6px;font-size:0.8em" id="hbRestart">Restart Agent</button>`
+      : "";
   return `
     <div class="card" style="padding:10px 14px">
       <div class="metric-label">Agent Heartbeat</div>

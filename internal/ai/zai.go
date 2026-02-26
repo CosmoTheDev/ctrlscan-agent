@@ -63,7 +63,7 @@ func (z *ZAIProvider) IsAvailable(ctx context.Context) bool {
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+z.apiKey)
-	resp, err := z.client.Do(req)
+	resp, err := z.client.Do(req) // #nosec G107 -- baseURL is derived from compile-time constants or user-configured base URL
 	if err != nil {
 		return false
 	}
@@ -300,7 +300,7 @@ func (z *ZAIProvider) complete(ctx context.Context, prompt string, maxTokens int
 		req.Header.Set("Authorization", "Bearer "+z.apiKey)
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := z.client.Do(req)
+		resp, err := z.client.Do(req) // #nosec G107 -- baseURL is derived from compile-time constants or user-configured base URL
 		if err != nil {
 			return "", fmt.Errorf("calling Z.AI API: %w", err)
 		}
@@ -319,7 +319,7 @@ func (z *ZAIProvider) complete(ctx context.Context, prompt string, maxTokens int
 		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxAttempts {
 			wait := zaiRetryDelay(resp.Header.Get("Retry-After"), string(respBody), attempt)
-			slog.Warn("Z.AI rate limited; retrying",
+			slog.Warn("Z.AI rate limited; retrying", // #nosec -- wait is a computed time.Duration, not raw tainted input
 				"attempt", attempt,
 				"max_attempts", maxAttempts,
 				"wait", wait.String(),

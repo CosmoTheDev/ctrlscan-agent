@@ -51,7 +51,7 @@ func (c *AnthropicProvider) IsAvailable(ctx context.Context) bool {
 	req.Header.Set("x-api-key", c.cfg.AnthropicKey)
 	req.Header.Set("anthropic-version", anthropicVersionHeader)
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) // #nosec G107 -- URL is compile-time constant anthropicModelsEndpoint
 	if err != nil {
 		return false
 	}
@@ -295,7 +295,7 @@ func (c *AnthropicProvider) complete(ctx context.Context, systemPrompt, userProm
 	req.Header.Set("anthropic-version", anthropicVersionHeader)
 	req.Header.Set("content-type", "application/json")
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) // #nosec G107 -- URL is compile-time constant anthropicMessagesEndpoint
 	if err != nil {
 		return "", fmt.Errorf("calling Anthropic API: %w", err)
 	}

@@ -91,8 +91,7 @@ var configEditCmd = &cobra.Command{
 			editor = "nano"
 		}
 		fmt.Printf("Opening %s with %s...\n", p, editor)
-		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-		c := exec.Command(editor, p)
+		c := exec.Command(editor, p) // #nosec G204 -- editor is from $EDITOR env var, intentional user-controlled binary
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr

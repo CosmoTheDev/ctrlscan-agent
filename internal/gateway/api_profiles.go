@@ -85,8 +85,18 @@ func (gw *Gateway) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create profiles directory")
 		return
 	}
-	dest := filepath.Join(dir, req.Name+".md")
-	if err := os.WriteFile(dest, []byte(req.Content), 0o640); err != nil {
+	// Validate and get safe path for writing the profile
+	safeDest, err := validateSafePath(dir, req.Name+".md")
+	if err != nil {
+		if strings.Contains(err.Error(), "failed to resolve") {
+			writeError(w, http.StatusInternalServerError, "failed to resolve profiles directory")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid profile name")
+		}
+		return
+	}
+
+	if err := os.WriteFile(safeDest, []byte(req.Content), 0o640); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to write profile")
 		return
 	}
@@ -101,8 +111,14 @@ func (gw *Gateway) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "profile name is required")
 		return
 	}
-	path := filepath.Join(gw.profilesDir(), name+".md")
-	if err := os.Remove(path); err != nil {
+	// Validate and get safe path for deleting the profile
+	safePath, err := validateSafePath(gw.profilesDir(), name+".md")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid profile name")
+		return
+	}
+
+	if err := os.Remove(safePath); err != nil {
 		if os.IsNotExist(err) {
 			writeError(w, http.StatusNotFound, "profile not found in user profiles directory (bundled profiles cannot be deleted)")
 			return

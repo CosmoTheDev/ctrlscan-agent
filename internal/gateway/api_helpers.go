@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -156,4 +157,29 @@ func toAnyArgs(ids []int64) []any {
 		args[i] = id
 	}
 	return args
+}
+
+// --- Path security utilities ---
+
+// validateSafePath ensures that the resolved destination path stays within the allowed base directory.
+// It returns an error if the path validation fails, preventing directory traversal attacks.
+func validateSafePath(baseDir, filename string) (string, error) {
+	// Resolve both the base directory and the destination file path to absolute paths
+	absBaseDir, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve base directory: %w", err)
+	}
+
+	destPath := filepath.Join(baseDir, filename)
+	absDestPath, err := filepath.Abs(destPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid filename: %w", err)
+	}
+
+	// Verify the absolute destination path is within the base directory
+	if !strings.HasPrefix(absDestPath, absBaseDir+string(filepath.Separator)) {
+		return "", fmt.Errorf("filename would escape allowed directory")
+	}
+
+	return absDestPath, nil
 }

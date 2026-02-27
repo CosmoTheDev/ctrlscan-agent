@@ -17,7 +17,10 @@ type Schedule struct {
 	// Empty means fall back to legacy targets/selected_repos/mode fields.
 	ScopeJSON string `db:"scope_json" json:"scope_json"`
 	// Mode overrides agent.mode when non-empty ("triage", "semi", "auto").
-	Mode      string  `db:"mode"        json:"mode"`
+	Mode string `db:"mode" json:"mode"`
+	// Profile is the scan profile name to apply for this schedule.
+	// Empty means use the configured default profile.
+	Profile   string  `db:"profile"     json:"profile"`
 	Enabled   bool    `db:"enabled"     json:"enabled"`
 	LastRunAt *string `db:"last_run_at" json:"last_run_at,omitempty"`
 	CreatedAt string  `db:"created_at"  json:"created_at"`

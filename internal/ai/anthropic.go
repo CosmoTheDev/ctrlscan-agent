@@ -264,7 +264,7 @@ func (c *AnthropicProvider) complete(ctx context.Context, systemPrompt, userProm
 	payload := anthropicRequest{
 		Model:     model,
 		MaxTokens: 4096,
-		System:    systemPrompt,
+		System:    systemPrompt + profileSystemAddendum(ctx),
 		Messages: []anthropicMessage{
 			{Role: "user", Content: userPrompt},
 		},

@@ -41,7 +41,7 @@ func newScheduler(db database.DB, triggerFn func(Schedule), broadcast func(SSEEv
 func (s *Scheduler) Start(ctx context.Context) error {
 	var schedules []Schedule
 	if err := s.db.Select(ctx, &schedules,
-		`SELECT id, name, description, expr, targets, selected_repos, scope_json, mode, enabled, last_run_at, created_at, updated_at
+		`SELECT id, name, description, expr, targets, selected_repos, scope_json, mode, profile, enabled, last_run_at, created_at, updated_at
 		 FROM gateway_schedules WHERE enabled = 1`,
 	); err != nil {
 		return fmt.Errorf("loading schedules: %w", err)
@@ -131,7 +131,7 @@ func (s *Scheduler) Update(ctx context.Context, id int64, sched Schedule) error 
 
 	var existing Schedule
 	if err := s.db.Get(ctx, &existing,
-		`SELECT id, name, description, expr, targets, selected_repos, scope_json, mode, enabled, last_run_at, created_at, updated_at
+		`SELECT id, name, description, expr, targets, selected_repos, scope_json, mode, profile, enabled, last_run_at, created_at, updated_at
 		 FROM gateway_schedules WHERE id = ?`, id,
 	); err != nil {
 		return fmt.Errorf("loading schedule %d: %w", id, err)
@@ -140,9 +140,9 @@ func (s *Scheduler) Update(ctx context.Context, id int64, sched Schedule) error 
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := s.db.Exec(ctx,
 		`UPDATE gateway_schedules
-		    SET name = ?, description = ?, expr = ?, targets = ?, selected_repos = ?, scope_json = ?, mode = ?, enabled = ?, updated_at = ?
+		    SET name = ?, description = ?, expr = ?, targets = ?, selected_repos = ?, scope_json = ?, mode = ?, profile = ?, enabled = ?, updated_at = ?
 		  WHERE id = ?`,
-		sched.Name, sched.Description, sched.Expr, sched.Targets, sched.SelectedRepos, sched.ScopeJSON, sched.Mode, sched.Enabled, now, id,
+		sched.Name, sched.Description, sched.Expr, sched.Targets, sched.SelectedRepos, sched.ScopeJSON, sched.Mode, sched.Profile, sched.Enabled, now, id,
 	); err != nil {
 		return err
 	}
@@ -181,7 +181,7 @@ func (s *Scheduler) Delete(ctx context.Context, id int64) error {
 func (s *Scheduler) List(ctx context.Context) ([]Schedule, error) {
 	var out []Schedule
 	err := s.db.Select(ctx, &out,
-		`SELECT id, name, description, expr, targets, selected_repos, scope_json, mode, enabled, last_run_at, created_at, updated_at
+		`SELECT id, name, description, expr, targets, selected_repos, scope_json, mode, profile, enabled, last_run_at, created_at, updated_at
 		 FROM gateway_schedules ORDER BY id`)
 	return out, err
 }
@@ -191,7 +191,7 @@ func (s *Scheduler) List(ctx context.Context) ([]Schedule, error) {
 func (s *Scheduler) TriggerNow(ctx context.Context, id int64) error {
 	var sched Schedule
 	if err := s.db.Get(ctx, &sched,
-		`SELECT id, name, description, expr, targets, selected_repos, scope_json, mode, enabled, last_run_at, created_at, updated_at
+		`SELECT id, name, description, expr, targets, selected_repos, scope_json, mode, profile, enabled, last_run_at, created_at, updated_at
 		 FROM gateway_schedules WHERE id = ?`, id,
 	); err != nil {
 		return fmt.Errorf("loading schedule %d: %w", id, err)

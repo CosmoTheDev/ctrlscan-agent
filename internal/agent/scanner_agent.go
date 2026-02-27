@@ -8,6 +8,7 @@ import (
 
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/database"
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/osv"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/repository"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/scanner"
 )
@@ -133,6 +134,15 @@ func (s *ScannerAgent) processRepo(ctx context.Context, cm *repository.CloneMana
 		cm.Cleanup(cloneResult)
 		return nil
 	}
+
+	// Async OSV enrichment — best-effort; never blocks the scan pipeline.
+	go func(jobID int64, db database.DB) {
+		enrichCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := osv.EnrichScanJob(enrichCtx, db, jobID); err != nil {
+			slog.Warn("osv: enrichment error", "job_id", jobID, "error", err)
+		}
+	}(results.JobID, s.db)
 
 	// Emit to fix queue (keep clone alive until fixer is done).
 	select {

@@ -13,6 +13,7 @@ import (
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/database"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/notify"
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/profiles"
 )
 
 // Gateway is the long-running daemon that combines:
@@ -201,10 +202,10 @@ func (gw *Gateway) triggerSchedule(sched Schedule) {
 			"id", sched.ID, "name", sched.Name, "mode", mode)
 		return
 	}
-	gw.triggerWithOptions(scope.Targets, 0, selectedRepos, false, mode)
+	gw.triggerWithOptions(scope.Targets, 0, selectedRepos, false, mode, strings.TrimSpace(sched.Profile))
 }
 
-func (gw *Gateway) triggerWithOptions(scanTargets []string, workers int, selectedRepos []agent.SelectedRepo, forceScan bool, mode string) {
+func (gw *Gateway) triggerWithOptions(scanTargets []string, workers int, selectedRepos []agent.SelectedRepo, forceScan bool, mode string, profile ...string) {
 	gw.mu.RLock()
 	paused := gw.paused
 	gw.mu.RUnlock()
@@ -213,14 +214,19 @@ func (gw *Gateway) triggerWithOptions(scanTargets []string, workers int, selecte
 		gw.broadcaster.send(SSEEvent{Type: "agent.trigger_ignored", Payload: map[string]any{"reason": "paused"}})
 		return
 	}
+	profileName := ""
+	if len(profile) > 0 {
+		profileName = strings.TrimSpace(profile[0])
+	}
 	var req *agent.TriggerRequest
-	if len(scanTargets) > 0 || workers > 0 || len(selectedRepos) > 0 || forceScan || strings.TrimSpace(mode) != "" {
+	if len(scanTargets) > 0 || workers > 0 || len(selectedRepos) > 0 || forceScan || strings.TrimSpace(mode) != "" || profileName != "" {
 		req = &agent.TriggerRequest{
 			ScanTargets:   append([]string(nil), scanTargets...),
 			Workers:       workers,
 			SelectedRepos: append([]agent.SelectedRepo(nil), selectedRepos...),
 			ForceScan:     forceScan,
 			Mode:          strings.TrimSpace(mode),
+			Profile:       profileName,
 		}
 	}
 	if req != nil {
@@ -262,6 +268,15 @@ func (gw *Gateway) Start(ctx context.Context) error {
 		port = 6080
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	// 0. Initialise scan profiles directory (copies bundled defaults if missing).
+	profilesDir := gw.cfg.Profiles.Dir
+	if profilesDir == "" {
+		profilesDir = profiles.DefaultDir()
+	}
+	if err := profiles.Init(profilesDir); err != nil {
+		slog.Warn("gateway: failed to initialise profiles directory", "error", err)
+	}
 
 	// 1. Start scheduler.
 	if err := gw.scheduler.Start(ctx); err != nil {

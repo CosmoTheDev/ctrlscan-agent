@@ -11,6 +11,8 @@ type Config struct {
 	Gateway      GatewayConfig      `mapstructure:"gateway"      json:"gateway"`
 	ControlPlane ControlPlaneConfig `mapstructure:"controlplane" json:"controlplane"`
 	Notify       NotifyConfig       `mapstructure:"notify"       json:"notify"`
+	AdvisoryFeed AdvisoryFeedConfig `mapstructure:"advisory_feed" json:"advisory_feed"`
+	Profiles     ProfilesConfig     `mapstructure:"profiles"      json:"profiles"`
 }
 
 // DatabaseConfig controls the storage backend.
@@ -93,6 +95,9 @@ type AgentConfig struct {
 	Watchlist []string `mapstructure:"watchlist"    json:"watchlist"`
 	// Scanners lists which tools to run.
 	Scanners []string `mapstructure:"scanners"     json:"scanners"`
+	// Profile is the default scan profile name for all agent sweeps.
+	// Empty means no profile (generic AI triage).
+	Profile string `mapstructure:"profile" json:"profile"`
 }
 
 // GatewayConfig controls the persistent gateway daemon.
@@ -178,4 +183,34 @@ type EmailNotifyConfig struct {
 type WebhookNotifyConfig struct {
 	URL    string `mapstructure:"url"    json:"url"`
 	Secret string `mapstructure:"secret" json:"secret"` // HMAC-SHA256 signing key // #nosec G101 -- config field, not a hardcoded credential
+}
+
+// AdvisoryFeedConfig controls OSV advisory feed polling and scan-time enrichment.
+type AdvisoryFeedConfig struct {
+	// Enabled gates advisory feed polling. OSV enrichment of SCA findings is
+	// always active when the osv_enrichments migration has been applied.
+	Enabled bool `mapstructure:"enabled" json:"enabled"`
+	// PollIntervalH is how often (in hours) to poll the OSV feed for new advisories.
+	// Defaults to 6.
+	PollIntervalH int `mapstructure:"poll_interval_h" json:"poll_interval_h"`
+	// Ecosystems filters advisories to specific package ecosystems.
+	// Valid values: "npm", "Go", "PyPI", "Maven", "crates.io", "RubyGems", "NuGet".
+	// Empty means all ecosystems.
+	Ecosystems []string `mapstructure:"ecosystems" json:"ecosystems"`
+	// MinSeverity filters advisories below this severity from triggering repo discovery.
+	// Valid values: "critical", "high", "medium", "low". Defaults to "high".
+	MinSeverity string `mapstructure:"min_severity" json:"min_severity"`
+	// MaxReposPerAdvisory caps how many repos are queued per advisory to prevent
+	// a single high-profile CVE from flooding the scan queue. Defaults to 20.
+	MaxReposPerAdvisory int `mapstructure:"max_repos_per_advisory" json:"max_repos_per_advisory"`
+}
+
+// ProfilesConfig controls scan policy profile storage and defaults.
+type ProfilesConfig struct {
+	// Dir is where user profile .md files are stored.
+	// Defaults to ~/.ctrlscan/profiles/.
+	Dir string `mapstructure:"dir" json:"dir"`
+	// Default is the profile name applied to all scans when no per-scan
+	// profile is specified. Empty means no profile (generic AI triage).
+	Default string `mapstructure:"default" json:"default"`
 }

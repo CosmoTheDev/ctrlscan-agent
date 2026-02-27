@@ -271,7 +271,7 @@ func (o *OpenAIProvider) complete(ctx context.Context, prompt string, maxTokens 
 	payload := openAIRequest{
 		Model: o.model,
 		Messages: []openAIMsg{
-			{Role: "system", Content: "You are an expert security engineer assisting with vulnerability remediation."},
+			{Role: "system", Content: "You are an expert security engineer assisting with vulnerability remediation." + profileSystemAddendum(ctx)},
 			{Role: "user", Content: prompt},
 		},
 	}

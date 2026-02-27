@@ -11,6 +11,7 @@ import (
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/ai"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/database"
+	"github.com/CosmoTheDev/ctrlscan-agent/internal/profiles"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/repository"
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/scanner"
 )
@@ -77,6 +78,9 @@ type TriggerRequest struct {
 	SelectedRepos []SelectedRepo
 	ForceScan     bool
 	Mode          string
+	// Profile is the scan profile name to use for this sweep only.
+	// Empty means use the configured default (cfg.Agent.Profile or cfg.Profiles.Default).
+	Profile string
 }
 
 // SelectedRepo identifies a repo chosen from gateway preview for a one-shot sweep.
@@ -367,6 +371,27 @@ func (o *Orchestrator) runSweep(
 			"targets", effectiveCfg.Agent.ScanTargets,
 			"mode", effectiveCfg.Agent.Mode,
 		)
+	}
+
+	// Resolve scan profile: trigger request > agent config > profiles config default.
+	profileName := ""
+	if req != nil && strings.TrimSpace(req.Profile) != "" {
+		profileName = strings.TrimSpace(req.Profile)
+	} else if strings.TrimSpace(effectiveCfg.Agent.Profile) != "" {
+		profileName = strings.TrimSpace(effectiveCfg.Agent.Profile)
+	} else if strings.TrimSpace(effectiveCfg.Profiles.Default) != "" {
+		profileName = strings.TrimSpace(effectiveCfg.Profiles.Default)
+	}
+	if profileName != "" {
+		profilesDir := effectiveCfg.Profiles.Dir
+		p, err := profiles.Load(profileName, profilesDir)
+		if err != nil {
+			slog.Warn("Orchestrator: scan profile not found; running without profile",
+				"profile", profileName, "error", err)
+		} else if p != nil {
+			slog.Info("Orchestrator: applying scan profile", "profile", p.Name)
+			aiProvider = ai.WithProfile(aiProvider, p)
+		}
 	}
 
 	repoQueue := make(chan repoJob, 256)

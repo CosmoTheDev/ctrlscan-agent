@@ -17,6 +17,7 @@ import (
 var (
 	agentMode    string
 	agentWorkers int
+	agentProfile string
 )
 
 var agentCmd = &cobra.Command{
@@ -53,6 +54,8 @@ func init() {
 		"Agent mode: triage|semi|auto (overrides config)")
 	agentCmd.Flags().IntVar(&agentWorkers, "workers", 0,
 		"Number of parallel scan workers (overrides config)")
+	agentCmd.Flags().StringVar(&agentProfile, "profile", "",
+		"Scan profile name to use for AI triage (e.g. owasp-top-10, secrets-only)")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
@@ -79,6 +82,9 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	if agentWorkers > 0 {
 		cfg.Agent.Workers = agentWorkers
+	}
+	if agentProfile != "" {
+		cfg.Agent.Profile = agentProfile
 	}
 
 	// Validate mode.

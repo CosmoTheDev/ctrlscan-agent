@@ -263,7 +263,7 @@ func (z *ZAIProvider) complete(ctx context.Context, prompt string, maxTokens int
 	payload := zaiRequest{
 		Model: z.model,
 		Messages: []zaiMsg{
-			{Role: "system", Content: "You are an expert security engineer assisting with vulnerability remediation."},
+			{Role: "system", Content: "You are an expert security engineer assisting with vulnerability remediation." + profileSystemAddendum(ctx)},
 			{Role: "user", Content: prompt},
 		},
 		MaxTokens:   maxTokens,

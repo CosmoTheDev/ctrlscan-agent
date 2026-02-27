@@ -49,6 +49,10 @@ func (d *DiscoveryAgent) discover(ctx context.Context, out chan<- repoJob) {
 			d.discoverCVETargets(ctx, out)
 		case "all_accessible":
 			d.discoverAllAccessible(ctx, out)
+		case "advisory_feed":
+			if err := d.runAdvisoryFeedDiscovery(ctx, out); err != nil {
+				slog.Warn("discovery: advisory feed failed", "error", err)
+			}
 		default:
 			slog.Warn("Unknown scan target", "target", target)
 		}

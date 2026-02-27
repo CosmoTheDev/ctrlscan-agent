@@ -203,6 +203,9 @@ type ollamaResponse struct {
 }
 
 func (o *OllamaProvider) complete(ctx context.Context, prompt string) (string, error) {
+	if addendum := profileSystemAddendum(ctx); addendum != "" {
+		prompt = addendum + "\n\n" + prompt
+	}
 	payload := ollamaRequest{
 		Model:  o.model,
 		Prompt: prompt,

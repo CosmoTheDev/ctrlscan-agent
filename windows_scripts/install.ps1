@@ -10,14 +10,14 @@ Write-Host "Building ctrlscan..." -ForegroundColor Cyan
 # Check for gcc
 $gccPath = Get-Command gcc -ErrorAction SilentlyContinue
 if (-not $gccPath) {
-    Write-Host "Error: gcc not found. Run '.\scripts\setup.ps1' first." -ForegroundColor Red
+    Write-Host "Error: gcc not found. Run '.\windows_scripts\setup.ps1' first." -ForegroundColor Red
     exit 1
 }
 
 # Check for go
 $goPath = Get-Command go -ErrorAction SilentlyContinue
 if (-not $goPath) {
-    Write-Host "Error: Go not found. Please install Go from https://go.dev/dl/" -ForegroundColor Red
+    Write-Host "Error: Go not found. Run '.\windows_scripts\setup.ps1' first." -ForegroundColor Red
     exit 1
 }
 

@@ -77,15 +77,36 @@ func installScannerTool(scanner, binDir string) error {
 	}
 }
 
+// toUnixPath converts a Windows path to Unix-style for Git Bash.
+// e.g., "C:\Users\foo\.ctrlscan\bin" -> "/c/Users/foo/.ctrlscan/bin"
+func toUnixPath(winPath string) string {
+	if runtime.GOOS != "windows" {
+		return winPath
+	}
+	// Replace backslashes with forward slashes
+	p := strings.ReplaceAll(winPath, "\\", "/")
+	// Convert drive letter: C:/ -> /c/
+	if len(p) >= 2 && p[1] == ':' {
+		p = "/" + strings.ToLower(string(p[0])) + p[2:]
+	}
+	return p
+}
+
 // runInstallScript runs a shell install script from a URL.
 func runInstallScript(url string, args ...string) error {
 	allArgs := append([]string{"-sSfL", url, "|", "sh", "-s", "--"}, args...)
 	_ = allArgs
 
+	// Convert Windows paths to Unix-style for Git Bash
+	convertedArgs := make([]string, len(args))
+	for i, arg := range args {
+		convertedArgs[i] = toUnixPath(arg)
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		// Use sh -c to allow piped commands.
-		cmdStr := fmt.Sprintf("curl -sSfL %s | sh -s -- %s", url, strings.Join(args, " "))
+		cmdStr := fmt.Sprintf("curl -sSfL %s | sh -s -- %s", url, strings.Join(convertedArgs, " "))
 		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd := exec.Command("sh", "-c", cmdStr)
 		cmd.Stdout = os.Stdout

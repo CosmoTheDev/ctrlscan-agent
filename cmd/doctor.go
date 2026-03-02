@@ -213,6 +213,11 @@ func findTool(name, binDir string) string {
 	if isExecutable(candidate) {
 		return candidate
 	}
+	// On Windows, also check with .exe extension
+	candidateExe := filepath.Join(binDir, name+".exe")
+	if isExecutable(candidateExe) {
+		return candidateExe
+	}
 	// Fall back to PATH.
 	if p, err := exec.LookPath(name); err == nil {
 		return p

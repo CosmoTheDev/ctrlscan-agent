@@ -47,6 +47,10 @@ func installScannerTool(scanner, binDir string) error {
 		return runInstallScript("https://raw.githubusercontent.com/anchore/grype/main/install.sh",
 			"-b", binDir)
 
+	case "syft":
+		return runInstallScript("https://raw.githubusercontent.com/anchore/syft/main/install.sh",
+			"-b", binDir)
+
 	case "trufflehog":
 		return runInstallScript("https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh",
 			"-b", binDir)
@@ -60,7 +64,12 @@ func installScannerTool(scanner, binDir string) error {
 		return installOpengrep(goos, goarch, binDir)
 
 	default:
-		installCmd = exec.Command("which", scanner)
+		// Check if tool exists on PATH
+		whichCmd := "which"
+		if goos == "windows" {
+			whichCmd = "where"
+		}
+		installCmd = exec.Command(whichCmd, scanner)
 		if err := installCmd.Run(); err != nil {
 			return fmt.Errorf("%s not found; install manually", scanner)
 		}

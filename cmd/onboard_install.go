@@ -109,16 +109,37 @@ func installOpengrep(goos, goarch, binDir string) error {
 		return fmt.Errorf("selecting opengrep asset for %s/%s: %w", goos, goarch, err)
 	}
 
-	dest := filepath.Join(binDir, "opengrep")
+	destName := "opengrep"
+	if goos == "windows" {
+		destName = "opengrep.exe"
+	}
+	dest := filepath.Join(binDir, destName)
 	tmpDest := dest + ".download"
-	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
-	cmd := exec.Command("sh", "-c",
-		fmt.Sprintf("curl --retry 3 --retry-all-errors -sSfL -o %q %q && mv %q %q && chmod +x %q",
-			tmpDest, url, tmpDest, dest, dest))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("downloading %s from %s: %w", assetName, url, err)
+
+	if goos == "windows" {
+		// Use PowerShell on Windows
+		psCmd := fmt.Sprintf(
+			`$ProgressPreference = 'SilentlyContinue'; `+
+				`Invoke-WebRequest -Uri '%s' -OutFile '%s' -UseBasicParsing; `+
+				`Move-Item -Force '%s' '%s'`,
+			url, tmpDest, tmpDest, dest)
+		cmd := exec.Command("powershell", "-NoProfile", "-Command", psCmd)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("downloading %s from %s: %w", assetName, url, err)
+		}
+	} else {
+		// Use sh/curl on Unix
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+		cmd := exec.Command("sh", "-c",
+			fmt.Sprintf("curl --retry 3 --retry-all-errors -sSfL -o %q %q && mv %q %q && chmod +x %q",
+				tmpDest, url, tmpDest, dest, dest))
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("downloading %s from %s: %w", assetName, url, err)
+		}
 	}
 	return nil
 }
@@ -181,9 +202,8 @@ func selectOpengrepAsset(goos, goarch string, assets []opengrepAssetInfo) (name 
 			candidates = []string{"opengrep_manylinux_x86", "opengrep_musllinux_x86"}
 		}
 	case "windows":
-		if goarch == "amd64" {
-			candidates = []string{"opengrep_windows_x86.exe"}
-		}
+		// Windows x86 binary works on both amd64 and arm64 (via emulation)
+		candidates = []string{"opengrep_windows_x86.exe"}
 	}
 
 	if len(candidates) == 0 {

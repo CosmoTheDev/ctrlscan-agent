@@ -93,42 +93,53 @@ if ($gccPath) {
 
     if ($arch -eq "ARM64") {
         Write-Host ""
-        Write-Host "ARM64 Windows detected." -ForegroundColor Yellow
-        Write-Host "Standard MinGW packages may not work. For ARM64, you need llvm-mingw:" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  1. Download from: https://github.com/mstorsjo/llvm-mingw/releases" -ForegroundColor White
-        Write-Host "     (Get: llvm-mingw-<version>-ucrt-aarch64.zip)" -ForegroundColor White
-        Write-Host "  2. Extract to C:\llvm-mingw" -ForegroundColor White
-        Write-Host "  3. Add C:\llvm-mingw\bin to your PATH" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Attempting standard install anyway..." -ForegroundColor Yellow
-    }
+        Write-Host "ARM64 Windows detected. Installing llvm-mingw (ARM64-native)..." -ForegroundColor Yellow
 
-    $installed = Install-Package -WingetId "mingw-w64.mingw-w64" -ChocoName "mingw" -ScoopName "mingw" -DisplayName "MinGW-w64"
-    if ($installed) {
-        Write-Host "MinGW-w64 installed successfully." -ForegroundColor Green
-        $needsRestart = $true
+        # Try scoop first for llvm-mingw
+        $scoop = Get-Command scoop -ErrorAction SilentlyContinue
+        if ($scoop) {
+            Write-Host "Using scoop to install llvm-mingw..." -ForegroundColor Cyan
+            scoop install llvm-mingw
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "llvm-mingw installed successfully." -ForegroundColor Green
+                $needsRestart = $true
+            } else {
+                Write-Host "scoop install failed." -ForegroundColor Yellow
+            }
+        }
 
-        if ($arch -eq "ARM64") {
+        # Check if gcc is now available
+        $gccCheck = Get-Command gcc -ErrorAction SilentlyContinue
+        if (-not $gccCheck) {
             Write-Host ""
-            Write-Host "NOTE: If builds fail, you may need ARM64-native MinGW (llvm-mingw)." -ForegroundColor Yellow
+            Write-Host "Automatic install failed. Please install llvm-mingw manually:" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "  1. Download from: https://github.com/mstorsjo/llvm-mingw/releases" -ForegroundColor White
+            Write-Host "     (Get: llvm-mingw-<version>-ucrt-aarch64.zip)" -ForegroundColor White
+            Write-Host "  2. Extract to C:\llvm-mingw" -ForegroundColor White
+            Write-Host "  3. Add to PATH:" -ForegroundColor White
+            Write-Host '     [Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\llvm-mingw\bin", "User")' -ForegroundColor White
+            Write-Host "  4. Restart terminal" -ForegroundColor White
+            exit 1
         }
     } else {
-        Write-Host ""
-        Write-Host "Failed to install MinGW-w64 automatically." -ForegroundColor Red
-        Write-Host "No supported package manager found (winget, chocolatey, or scoop)." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Please install manually:" -ForegroundColor Yellow
-        if ($arch -eq "ARM64") {
-            Write-Host "  For ARM64: https://github.com/mstorsjo/llvm-mingw/releases" -ForegroundColor White
-            Write-Host "            (Download llvm-mingw-<version>-ucrt-aarch64.zip)" -ForegroundColor White
+        # AMD64 - use standard MinGW
+        $installed = Install-Package -WingetId "mingw-w64.mingw-w64" -ChocoName "mingw" -ScoopName "mingw" -DisplayName "MinGW-w64"
+        if ($installed) {
+            Write-Host "MinGW-w64 installed successfully." -ForegroundColor Green
+            $needsRestart = $true
         } else {
+            Write-Host ""
+            Write-Host "Failed to install MinGW-w64 automatically." -ForegroundColor Red
+            Write-Host "No supported package manager found (winget, chocolatey, or scoop)." -ForegroundColor Red
+            Write-Host ""
+            Write-Host "Please install manually:" -ForegroundColor Yellow
             Write-Host "  Option 1: Install winget (comes with App Installer from Microsoft Store)" -ForegroundColor White
             Write-Host "  Option 2: Install Chocolatey: https://chocolatey.org/install" -ForegroundColor White
             Write-Host "  Option 3: Install Scoop: https://scoop.sh" -ForegroundColor White
             Write-Host "  Option 4: Download MinGW-w64 directly: https://www.mingw-w64.org/downloads/" -ForegroundColor White
+            exit 1
         }
-        exit 1
     }
 }
 Write-Host ""

@@ -101,16 +101,29 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Delegate to active view.
-	switch a.activeTab {
-	case TabDashboard:
+	// Always delegate data-loading messages to all models (not just active tab)
+	// so background data fetches complete regardless of which tab is shown.
+	switch msg.(type) {
+	case dashLoadedMsg:
 		newDash, cmd := a.dashboard.Update(msg)
 		a.dashboard = newDash.(DashboardModel)
 		cmds = append(cmds, cmd)
-	case TabFindings:
+	case findingsLoadedMsg:
 		newFindings, cmd := a.findings.Update(msg)
 		a.findings = newFindings.(FindingsModel)
 		cmds = append(cmds, cmd)
+	default:
+		// For other messages (key presses, etc.), delegate to active view only.
+		switch a.activeTab {
+		case TabDashboard:
+			newDash, cmd := a.dashboard.Update(msg)
+			a.dashboard = newDash.(DashboardModel)
+			cmds = append(cmds, cmd)
+		case TabFindings:
+			newFindings, cmd := a.findings.Update(msg)
+			a.findings = newFindings.(FindingsModel)
+			cmds = append(cmds, cmd)
+		}
 	}
 
 	return a, tea.Batch(cmds...)

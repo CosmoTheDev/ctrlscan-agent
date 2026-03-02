@@ -20,10 +20,14 @@ type DashboardModel struct {
 	height   int
 	lastLoad time.Time
 	loading  bool
+	err      error
 }
 
 // dashLoadedMsg carries loaded scan jobs.
-type dashLoadedMsg struct{ jobs []models.ScanJob }
+type dashLoadedMsg struct {
+	jobs []models.ScanJob
+	err  error
+}
 
 // NewDashboardModel creates a DashboardModel.
 func NewDashboardModel(db database.DB) DashboardModel {
@@ -38,9 +42,9 @@ func (d DashboardModel) loadCmd() tea.Cmd {
 	return func() tea.Msg {
 		var jobs []models.ScanJob
 		ctx := context.Background()
-		_ = d.db.Select(ctx, &jobs,
+		err := d.db.Select(ctx, &jobs,
 			`SELECT * FROM scan_jobs ORDER BY started_at DESC LIMIT 20`)
-		return dashLoadedMsg{jobs: jobs}
+		return dashLoadedMsg{jobs: jobs, err: err}
 	}
 }
 
@@ -48,6 +52,7 @@ func (d DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case dashLoadedMsg:
 		d.jobs = msg.jobs
+		d.err = msg.err
 		d.loading = false
 		d.lastLoad = time.Now()
 		// Refresh every 10 seconds.
@@ -71,6 +76,17 @@ func (d *DashboardModel) SetSize(w, h int) {
 func (d DashboardModel) View() string {
 	if d.loading && len(d.jobs) == 0 {
 		return panelStyle.Width(max(20, d.width-2)).Render("Loading scan jobs...")
+	}
+
+	if d.err != nil {
+		return panelStyle.Width(max(20, d.width-2)).Render(
+			lipgloss.JoinVertical(lipgloss.Left,
+				panelHeaderStyle.Render("Error"),
+				"",
+				dimStyle.Render("Failed to load scan jobs:"),
+				dimStyle.Render(d.err.Error()),
+			),
+		)
 	}
 
 	// Summary counts.

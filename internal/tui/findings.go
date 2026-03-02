@@ -22,12 +22,14 @@ type FindingsModel struct {
 	cursor  int
 	filter  string // "sca" | "sast" | "secrets" | "" (all)
 	loading bool
+	err     error
 }
 
 type findingsLoadedMsg struct {
 	vulns   []models.SCAVuln
 	sast    []models.SASTFinding
 	secrets []models.SecretsFinding
+	err     error
 }
 
 // NewFindingsModel creates a FindingsModel.
@@ -45,15 +47,22 @@ func (f FindingsModel) loadCmd() tea.Cmd {
 		var vulns []models.SCAVuln
 		var sast []models.SASTFinding
 		var secrets []models.SecretsFinding
+		var firstErr error
 
-		_ = f.db.Select(ctx, &vulns,
-			`SELECT * FROM sca_vulns WHERE status = 'open' ORDER BY cvss DESC LIMIT 200`)
-		_ = f.db.Select(ctx, &sast,
-			`SELECT * FROM sast_findings WHERE status = 'open' ORDER BY severity LIMIT 200`)
-		_ = f.db.Select(ctx, &secrets,
-			`SELECT * FROM secrets_findings WHERE status = 'open' ORDER BY verified DESC, first_seen_at DESC LIMIT 200`)
+		if err := f.db.Select(ctx, &vulns,
+			`SELECT * FROM sca_vulns WHERE status = 'open' ORDER BY cvss DESC LIMIT 200`); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := f.db.Select(ctx, &sast,
+			`SELECT * FROM sast_findings WHERE status = 'open' ORDER BY severity LIMIT 200`); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := f.db.Select(ctx, &secrets,
+			`SELECT * FROM secrets_findings WHERE status = 'open' ORDER BY verified DESC, first_seen_at DESC LIMIT 200`); err != nil && firstErr == nil {
+			firstErr = err
+		}
 
-		return findingsLoadedMsg{vulns: vulns, sast: sast, secrets: secrets}
+		return findingsLoadedMsg{vulns: vulns, sast: sast, secrets: secrets, err: firstErr}
 	}
 }
 
@@ -63,6 +72,7 @@ func (f FindingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		f.vulns = msg.vulns
 		f.sast = msg.sast
 		f.secrets = msg.secrets
+		f.err = msg.err
 		f.loading = false
 		return f, tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
 			return f.loadCmd()()
@@ -103,8 +113,19 @@ func (f *FindingsModel) SetSize(w, h int) {
 }
 
 func (f FindingsModel) View() string {
-	if f.loading && len(f.vulns) == 0 {
+	if f.loading && len(f.vulns) == 0 && len(f.sast) == 0 && len(f.secrets) == 0 {
 		return panelStyle.Width(max(20, f.width-2)).Render("Loading findings...")
+	}
+
+	if f.err != nil && len(f.vulns) == 0 && len(f.sast) == 0 && len(f.secrets) == 0 {
+		return panelStyle.Width(max(20, f.width-2)).Render(
+			lipgloss.JoinVertical(lipgloss.Left,
+				panelHeaderStyle.Render("Error"),
+				"",
+				dimStyle.Render("Failed to load findings:"),
+				dimStyle.Render(f.err.Error()),
+			),
+		)
 	}
 
 	rows := ""

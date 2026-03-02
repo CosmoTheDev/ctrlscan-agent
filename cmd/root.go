@@ -58,7 +58,7 @@ func init() {
 		scanCmd,
 		agentCmd,
 		gatewayCmd,
-		uiCmd,
+		tuiCmd,
 		repoCmd,
 		configCmd,
 		doctorCmd,

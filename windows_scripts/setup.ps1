@@ -95,32 +95,88 @@ if ($gccPath) {
         Write-Host ""
         Write-Host "ARM64 Windows detected. Installing llvm-mingw (ARM64-native)..." -ForegroundColor Yellow
 
-        # Try scoop first for llvm-mingw
-        $scoop = Get-Command scoop -ErrorAction SilentlyContinue
-        if ($scoop) {
-            Write-Host "Using scoop to install llvm-mingw..." -ForegroundColor Cyan
-            scoop install llvm-mingw
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "llvm-mingw installed successfully." -ForegroundColor Green
+        $llvmInstallDir = "C:\llvm-mingw"
+        $llvmBinDir = "$llvmInstallDir\bin"
+
+        # Check if already installed manually
+        if (Test-Path "$llvmBinDir\gcc.exe") {
+            Write-Host "llvm-mingw already installed at $llvmInstallDir" -ForegroundColor Green
+            # Add to PATH for current session
+            if ($env:Path -notlike "*$llvmBinDir*") {
+                $env:Path = "$llvmBinDir;$env:Path"
+            }
+        } else {
+            # Download and install llvm-mingw from GitHub
+            Write-Host "Downloading llvm-mingw from GitHub..." -ForegroundColor Cyan
+
+            try {
+                # Get latest release info
+                $releaseUrl = "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest"
+                $release = Invoke-RestMethod -Uri $releaseUrl -Headers @{"User-Agent"="PowerShell"}
+
+                # Find the ARM64 UCRT asset
+                $asset = $release.assets | Where-Object { $_.name -like "*ucrt-aarch64.zip" } | Select-Object -First 1
+
+                if (-not $asset) {
+                    throw "Could not find ARM64 asset in latest release"
+                }
+
+                $downloadUrl = $asset.browser_download_url
+                $zipFile = "$env:TEMP\llvm-mingw-arm64.zip"
+                $extractDir = "$env:TEMP\llvm-mingw-extract"
+
+                Write-Host "Downloading: $($asset.name)" -ForegroundColor Cyan
+                Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile -UseBasicParsing
+
+                Write-Host "Extracting..." -ForegroundColor Cyan
+                if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+                Expand-Archive -Path $zipFile -DestinationPath $extractDir -Force
+
+                # Find the extracted folder (it has a version number in the name)
+                $extractedFolder = Get-ChildItem $extractDir | Select-Object -First 1
+
+                # Move to final location
+                if (Test-Path $llvmInstallDir) { Remove-Item $llvmInstallDir -Recurse -Force }
+                Move-Item $extractedFolder.FullName $llvmInstallDir
+
+                # Cleanup
+                Remove-Item $zipFile -Force
+                Remove-Item $extractDir -Recurse -Force
+
+                Write-Host "llvm-mingw installed to $llvmInstallDir" -ForegroundColor Green
+
+                # Add to PATH permanently
+                $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+                if ($currentPath -notlike "*$llvmBinDir*") {
+                    [Environment]::SetEnvironmentVariable("Path", "$llvmBinDir;$currentPath", "User")
+                    Write-Host "Added $llvmBinDir to user PATH" -ForegroundColor Green
+                }
+
+                # Add to current session
+                $env:Path = "$llvmBinDir;$env:Path"
                 $needsRestart = $true
-            } else {
-                Write-Host "scoop install failed." -ForegroundColor Yellow
+
+            } catch {
+                Write-Host ""
+                Write-Host "Automatic download failed: $_" -ForegroundColor Red
+                Write-Host ""
+                Write-Host "Please install llvm-mingw manually:" -ForegroundColor Yellow
+                Write-Host "  1. Download from: https://github.com/mstorsjo/llvm-mingw/releases" -ForegroundColor White
+                Write-Host "     (Get: llvm-mingw-<version>-ucrt-aarch64.zip)" -ForegroundColor White
+                Write-Host "  2. Extract to C:\llvm-mingw" -ForegroundColor White
+                Write-Host "  3. Add to PATH:" -ForegroundColor White
+                Write-Host '     [Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\llvm-mingw\bin", "User")' -ForegroundColor White
+                Write-Host "  4. Restart terminal" -ForegroundColor White
+                exit 1
             }
         }
 
-        # Check if gcc is now available
+        # Verify installation
         $gccCheck = Get-Command gcc -ErrorAction SilentlyContinue
         if (-not $gccCheck) {
             Write-Host ""
-            Write-Host "Automatic install failed. Please install llvm-mingw manually:" -ForegroundColor Red
-            Write-Host ""
-            Write-Host "  1. Download from: https://github.com/mstorsjo/llvm-mingw/releases" -ForegroundColor White
-            Write-Host "     (Get: llvm-mingw-<version>-ucrt-aarch64.zip)" -ForegroundColor White
-            Write-Host "  2. Extract to C:\llvm-mingw" -ForegroundColor White
-            Write-Host "  3. Add to PATH:" -ForegroundColor White
-            Write-Host '     [Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\llvm-mingw\bin", "User")' -ForegroundColor White
-            Write-Host "  4. Restart terminal" -ForegroundColor White
-            exit 1
+            Write-Host "gcc still not found. You may need to restart your terminal." -ForegroundColor Yellow
+            $needsRestart = $true
         }
     } else {
         # AMD64 - use standard MinGW

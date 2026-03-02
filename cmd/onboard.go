@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/CosmoTheDev/ctrlscan-agent/internal/config"
@@ -769,10 +770,20 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Config saved to: %s\n", dimStyle.Render(cfgPath))
 	fmt.Printf("  Binaries in:     %s\n\n", dimStyle.Render(binDir))
 
-	fmt.Println(headerStyle.Render("  Add to your shell profile (.bashrc / .zshrc):"))
-	fmt.Println()
-	fmt.Printf("    %s\n\n",
-		successStyle.Render(fmt.Sprintf(`export PATH="$HOME/.ctrlscan/bin:$PATH"`)))
+	if runtime.GOOS == "windows" {
+		fmt.Println(headerStyle.Render("  Add to your PATH (PowerShell):"))
+		fmt.Println()
+		fmt.Println(dimStyle.Render("    # For this session:"))
+		fmt.Printf("    %s\n", successStyle.Render(`$env:Path = "$env:USERPROFILE\.ctrlscan\bin;$env:Path"`))
+		fmt.Println()
+		fmt.Println(dimStyle.Render("    # To add permanently:"))
+		fmt.Printf("    %s\n\n", successStyle.Render(`[Environment]::SetEnvironmentVariable('Path', "$env:USERPROFILE\.ctrlscan\bin;" + [Environment]::GetEnvironmentVariable('Path', 'User'), 'User')`))
+	} else {
+		fmt.Println(headerStyle.Render("  Add to your shell profile (.bashrc / .zshrc):"))
+		fmt.Println()
+		fmt.Printf("    %s\n\n",
+			successStyle.Render(fmt.Sprintf(`export PATH="$HOME/.ctrlscan/bin:$PATH"`)))
+	}
 
 	if len(installErrors) > 0 {
 		fmt.Println(warnStyle.Render("  Some tools could not be installed automatically:"))

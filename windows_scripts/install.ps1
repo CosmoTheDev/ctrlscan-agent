@@ -21,8 +21,21 @@ if (-not $goPath) {
     exit 1
 }
 
-# Build with CGO enabled
+# Detect architecture and set environment
+$arch = $env:PROCESSOR_ARCHITECTURE
+if ($arch -eq "AMD64") {
+    $env:GOARCH = "amd64"
+} elseif ($arch -eq "ARM64") {
+    $env:GOARCH = "arm64"
+} else {
+    Write-Host "Warning: Unknown architecture '$arch', defaulting to amd64" -ForegroundColor Yellow
+    $env:GOARCH = "amd64"
+}
+
+$env:GOOS = "windows"
 $env:CGO_ENABLED = "1"
+
+Write-Host "Building for $env:GOOS/$env:GOARCH..." -ForegroundColor Cyan
 go build -o $Binary .
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Build failed." -ForegroundColor Red

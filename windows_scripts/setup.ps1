@@ -65,26 +65,69 @@ Write-Host ""
 
 # === Check and install gcc (MinGW-w64) ===
 Write-Host "Checking for gcc..." -ForegroundColor Cyan
+
+# Detect architecture
+$arch = $env:PROCESSOR_ARCHITECTURE
+Write-Host "Detected architecture: $arch" -ForegroundColor Cyan
+
 $gccPath = Get-Command gcc -ErrorAction SilentlyContinue
 if ($gccPath) {
     Write-Host "gcc is already installed: $($gccPath.Source)" -ForegroundColor Green
     & gcc --version | Select-Object -First 1
+
+    # Verify gcc matches system architecture
+    $gccArch = & gcc -dumpmachine 2>$null
+    if ($arch -eq "ARM64" -and $gccArch -notlike "*aarch64*" -and $gccArch -notlike "*arm64*") {
+        Write-Host ""
+        Write-Host "WARNING: You have ARM64 Windows but x86_64 gcc installed." -ForegroundColor Yellow
+        Write-Host "This may cause build failures. Consider installing ARM64 MinGW:" -ForegroundColor Yellow
+        Write-Host "  https://github.com/mstorsjo/llvm-mingw/releases" -ForegroundColor White
+        Write-Host "  (Download: llvm-mingw-<version>-ucrt-aarch64.zip)" -ForegroundColor White
+    } elseif ($arch -eq "AMD64" -and $gccArch -like "*aarch64*") {
+        Write-Host ""
+        Write-Host "WARNING: You have AMD64 Windows but ARM64 gcc installed." -ForegroundColor Yellow
+        Write-Host "This will cause build failures. Please reinstall MinGW for x86_64." -ForegroundColor Yellow
+    }
 } else {
     Write-Host "gcc not found, installing MinGW-w64..." -ForegroundColor Yellow
+
+    if ($arch -eq "ARM64") {
+        Write-Host ""
+        Write-Host "ARM64 Windows detected." -ForegroundColor Yellow
+        Write-Host "Standard MinGW packages may not work. For ARM64, you need llvm-mingw:" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  1. Download from: https://github.com/mstorsjo/llvm-mingw/releases" -ForegroundColor White
+        Write-Host "     (Get: llvm-mingw-<version>-ucrt-aarch64.zip)" -ForegroundColor White
+        Write-Host "  2. Extract to C:\llvm-mingw" -ForegroundColor White
+        Write-Host "  3. Add C:\llvm-mingw\bin to your PATH" -ForegroundColor White
+        Write-Host ""
+        Write-Host "Attempting standard install anyway..." -ForegroundColor Yellow
+    }
+
     $installed = Install-Package -WingetId "mingw-w64.mingw-w64" -ChocoName "mingw" -ScoopName "mingw" -DisplayName "MinGW-w64"
     if ($installed) {
         Write-Host "MinGW-w64 installed successfully." -ForegroundColor Green
         $needsRestart = $true
+
+        if ($arch -eq "ARM64") {
+            Write-Host ""
+            Write-Host "NOTE: If builds fail, you may need ARM64-native MinGW (llvm-mingw)." -ForegroundColor Yellow
+        }
     } else {
         Write-Host ""
         Write-Host "Failed to install MinGW-w64 automatically." -ForegroundColor Red
         Write-Host "No supported package manager found (winget, chocolatey, or scoop)." -ForegroundColor Red
         Write-Host ""
         Write-Host "Please install manually:" -ForegroundColor Yellow
-        Write-Host "  Option 1: Install winget (comes with App Installer from Microsoft Store)" -ForegroundColor White
-        Write-Host "  Option 2: Install Chocolatey: https://chocolatey.org/install" -ForegroundColor White
-        Write-Host "  Option 3: Install Scoop: https://scoop.sh" -ForegroundColor White
-        Write-Host "  Option 4: Download MinGW-w64 directly: https://www.mingw-w64.org/downloads/" -ForegroundColor White
+        if ($arch -eq "ARM64") {
+            Write-Host "  For ARM64: https://github.com/mstorsjo/llvm-mingw/releases" -ForegroundColor White
+            Write-Host "            (Download llvm-mingw-<version>-ucrt-aarch64.zip)" -ForegroundColor White
+        } else {
+            Write-Host "  Option 1: Install winget (comes with App Installer from Microsoft Store)" -ForegroundColor White
+            Write-Host "  Option 2: Install Chocolatey: https://chocolatey.org/install" -ForegroundColor White
+            Write-Host "  Option 3: Install Scoop: https://scoop.sh" -ForegroundColor White
+            Write-Host "  Option 4: Download MinGW-w64 directly: https://www.mingw-w64.org/downloads/" -ForegroundColor White
+        }
         exit 1
     }
 }

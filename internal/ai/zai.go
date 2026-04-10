@@ -302,6 +302,19 @@ func (z *ZAIProvider) complete(ctx context.Context, prompt string, maxTokens int
 
 		resp, err := z.client.Do(req) // #nosec G107 -- baseURL is derived from compile-time constants or user-configured base URL
 		if err != nil {
+			if attempt < maxAttempts {
+				wait := zaiRetryDelay("", "", attempt)
+				slog.Warn("Z.AI request failed; retrying",
+					"attempt", attempt,
+					"max_attempts", maxAttempts,
+					"wait", wait.String(),
+					"error", err,
+				)
+				if sleepErr := sleepWithContext(ctx, wait); sleepErr != nil {
+					return "", sleepErr
+				}
+				continue
+			}
 			return "", fmt.Errorf("calling Z.AI API: %w", err)
 		}
 		respStatus = resp.StatusCode

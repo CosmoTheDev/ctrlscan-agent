@@ -1,15 +1,33 @@
-.PHONY: build install clean clean-db test lint js-lint doctor mcp-playwright mcp-playwright-gateway mcp-sqlite
+.PHONY: build install clean clean-db test lint js-lint doctor mcp-playwright mcp-playwright-gateway mcp-sqlite apple-intelligence-setup
 
 JS_UI := internal/gateway/ui
 
-BINARY   := ctrlscan
-INSTALL  := $(HOME)/.ctrlscan/bin/$(BINARY)
-GOFLAGS  :=
+BINARY      := ctrlscan
+INSTALL     := $(HOME)/.ctrlscan/bin/$(BINARY)
+GOFLAGS     :=
+APPLE_DYLIB := /usr/local/lib/libFoundationModels.dylib
+
+# Auto-detect Apple Intelligence support: darwin + arm64 + dylib installed.
+GOTAGS :=
+ifeq ($(shell uname -s 2>/dev/null),Darwin)
+ifeq ($(shell uname -m 2>/dev/null),arm64)
+ifneq ($(wildcard $(APPLE_DYLIB)),)
+GOTAGS := apple_intelligence
+endif
+endif
+endif
+
+_BUILD_TAGS := $(if $(GOTAGS),-tags $(GOTAGS),)
 
 build:
-	go build $(GOFLAGS) -o $(BINARY) .
+	go build $(GOFLAGS) $(_BUILD_TAGS) -o $(BINARY) .
 
-install: build
+apple-intelligence-setup:
+	@if [ "$$(uname -s)" = "Darwin" ] && [ "$$(uname -m)" = "arm64" ]; then \
+		bash scripts/install-apple-intelligence.sh || true; \
+	fi
+
+install: apple-intelligence-setup build
 	@mkdir -p $(HOME)/.ctrlscan/bin
 	cp $(BINARY) $(INSTALL)
 	@echo "Installed to $(INSTALL)"

@@ -31,7 +31,7 @@ ENV BIN_DIR=/usr/local/bin
 RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b ${BIN_DIR} && \
     curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b ${BIN_DIR} && \
     curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b ${BIN_DIR} && \
-    curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${BIN_DIR}
+    curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${BIN_DIR} v0.69.3
 
 COPY --from=builder /build/ctrlscan /usr/local/bin/ctrlscan
 

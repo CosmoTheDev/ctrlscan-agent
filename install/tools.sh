@@ -36,7 +36,7 @@ curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scr
 # ── trivy (IaC misconfiguration) ──────────────────────────────────────────────
 echo -n "  trivy     ... "
 curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | \
-  sh -s -- -b "${BIN_DIR}" 2>/dev/null && echo "done" || echo "FAILED"
+  sh -s -- -b "${BIN_DIR}" v0.69.3 2>/dev/null && echo "done" || echo "FAILED"
 
 # ── opengrep (SAST) ───────────────────────────────────────────────────────────
 echo -n "  opengrep  ... "

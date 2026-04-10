@@ -53,7 +53,7 @@ func installScannerTool(scanner, binDir string) error {
 
 	case "trivy":
 		return runInstallScript("https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh",
-			"-b", binDir)
+			"-b", binDir, "v0.69.3")
 
 	case "opengrep":
 		// opengrep distributes releases on GitHub — attempt via curl.

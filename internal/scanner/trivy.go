@@ -21,7 +21,7 @@ func NewTrivyScanner(binDir string) *TrivyScanner {
 
 func (t *TrivyScanner) Name() string             { return "trivy" }
 func (t *TrivyScanner) ScannerType() ScannerType { return ScannerTypeIaC }
-func (t *TrivyScanner) DockerImage() string      { return "aquasec/trivy:latest" }
+func (t *TrivyScanner) DockerImage() string      { return "aquasec/trivy:0.69.3" }
 
 func (t *TrivyScanner) IsAvailableLocal(ctx context.Context) bool {
 	return isBinaryAvailable(ctx, "trivy", t.binDir)

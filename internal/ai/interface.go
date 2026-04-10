@@ -106,10 +106,6 @@ func New(cfg config.AIConfig) (AIProvider, error) {
 		return nil, err
 	}
 
-	if len(cfg.Fallback) == 0 {
-		return primary, nil
-	}
-
 	chain := []AIProvider{primary}
 	for _, fallbackProvider := range cfg.Fallback {
 		p, err := newSingle(fallbackProvider, cfg)
@@ -120,8 +116,13 @@ func New(cfg config.AIConfig) (AIProvider, error) {
 		chain = append(chain, p)
 	}
 
+	// On capable Mac hardware, automatically append Apple Intelligence as a final
+	// zero-config fallback. appendAppleFallback is a no-op on non-darwin or when
+	// the dylib is not installed (apple_intelligence build tag absent).
+	chain = appendAppleFallback(chain)
+
 	if len(chain) == 1 {
-		return primary, nil
+		return chain[0], nil
 	}
 
 	return NewChain(chain), nil

@@ -298,7 +298,9 @@ func newSingle(provider string, cfg config.AIConfig) (AIProvider, error) {
 			return &NoopProvider{}, nil
 		}
 		return NewZAI(cfg)
+	case "apple":
+		return NewAppleIntelligence(), nil
 	default:
-		return nil, fmt.Errorf("unsupported AI provider %q (supported: openai, ollama, anthropic, zai)", provider)
+		return nil, fmt.Errorf("unsupported AI provider %q (supported: openai, ollama, anthropic, zai, apple)", provider)
 	}
 }

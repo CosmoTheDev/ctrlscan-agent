@@ -351,6 +351,7 @@ func validateScanTargets(targets []string) error {
 		"watchlist":      {},
 		"cve_search":     {},
 		"all_accessible": {},
+		"advisory_feed":  {},
 	}
 	seen := map[string]struct{}{}
 	for _, t := range targets {

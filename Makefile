@@ -1,36 +1,68 @@
-.PHONY: build install clean clean-db test lint js-lint doctor mcp-playwright mcp-playwright-gateway mcp-sqlite apple-intelligence-setup
+.PHONY: build install _install clean clean-db test lint js-lint doctor mcp-playwright mcp-playwright-gateway mcp-sqlite apple-intelligence-setup
 
 JS_UI := internal/gateway/ui
 
-BINARY      := ctrlscan
-INSTALL     := $(HOME)/.ctrlscan/bin/$(BINARY)
-GOFLAGS     :=
-APPLE_DYLIB := /usr/local/lib/libFoundationModels.dylib
+BINARY     := ctrlscan
+INSTALL    := $(HOME)/.ctrlscan/bin/$(BINARY)
+GOFLAGS    :=
+VENDOR_GAI := vendor/go-apple-intelligence
+GAI_DYLIB  := $(VENDOR_GAI)/lib/libFoundationModels.dylib
+GAI_CLONE  := https://github.com/CosmoTheDev/go-apple-intelligence.git
 
-# Auto-detect Apple Intelligence support: darwin + arm64 + dylib installed.
-GOTAGS :=
+# Auto-detect Apple Intelligence support: darwin + arm64 + vendor dylib present.
+# Variables are re-evaluated in each make invocation, so `install` uses a
+# recursive $(MAKE) call after apple-intelligence-setup builds the dylib.
+GOTAGS    :=
+APPLE_LIB :=
 ifeq ($(shell uname -s 2>/dev/null),Darwin)
 ifeq ($(shell uname -m 2>/dev/null),arm64)
-ifneq ($(wildcard $(APPLE_DYLIB)),)
-GOTAGS := apple_intelligence
+ifneq ($(wildcard $(GAI_DYLIB)),)
+GOTAGS    := apple_intelligence
+APPLE_LIB := $(abspath $(VENDOR_GAI)/lib)
 endif
 endif
 endif
-
-_BUILD_TAGS := $(if $(GOTAGS),-tags $(GOTAGS),)
 
 build:
-	go build $(GOFLAGS) $(_BUILD_TAGS) -o $(BINARY) .
+ifdef APPLE_LIB
+	CGO_LDFLAGS="-L$(APPLE_LIB) -Wl,-rpath,$(APPLE_LIB)" go build $(GOFLAGS) -mod=mod -tags apple_intelligence -o $(BINARY) .
+else
+	go build $(GOFLAGS) -o $(BINARY) .
+endif
 
+# apple-intelligence-setup: clone + build the dylib into vendor/ on capable Macs.
+# Runs before the recursive $(MAKE) _install so that GOTAGS is re-evaluated with
+# the freshly-built dylib already present.
 apple-intelligence-setup:
 	@if [ "$$(uname -s)" = "Darwin" ] && [ "$$(uname -m)" = "arm64" ]; then \
-		bash scripts/install-apple-intelligence.sh || true; \
+		if [ -f "$(GAI_DYLIB)" ]; then \
+			echo "  Apple Intelligence: dylib ready ($(GAI_DYLIB))"; \
+		else \
+			echo ""; \
+			echo "  Apple Intelligence: setting up native dylib..."; \
+			if [ ! -d "$(VENDOR_GAI)" ]; then \
+				echo "  Cloning go-apple-intelligence into $(VENDOR_GAI)..."; \
+				git clone --depth 1 "$(GAI_CLONE)" "$(VENDOR_GAI)" || { echo "  Clone failed — skipping Apple Intelligence."; exit 0; }; \
+			fi; \
+			echo "  Building native dylib (requires Xcode 26+)..."; \
+			if (cd "$(VENDOR_GAI)" && make build-native); then \
+				echo "  Apple Intelligence: dylib built successfully."; \
+			else \
+				echo "  Build failed — ensure Xcode 26+ is installed (xcode-select --install)."; \
+			fi; \
+		fi; \
 	fi
 
-install: apple-intelligence-setup build
+# `install` runs setup first, then delegates to `_install` via a fresh $(MAKE)
+# invocation so GOTAGS/APPLE_LIB are re-evaluated with the dylib now present.
+install: apple-intelligence-setup
+	@$(MAKE) --no-print-directory _install
+
+_install: build
 	@mkdir -p $(HOME)/.ctrlscan/bin
 	cp $(BINARY) $(INSTALL)
 	@echo "Installed to $(INSTALL)"
+	@if [ -n "$(GOTAGS)" ]; then echo "  (built with Apple Intelligence support)"; fi
 	@echo ""
 	@shell_name="$${SHELL##*/}"; \
 	profile_file="$$HOME/.profile"; \
